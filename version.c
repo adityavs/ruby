@@ -11,6 +11,8 @@
 
 #include "ruby/ruby.h"
 #include "version.h"
+#include "vm_core.h"
+#include "mjit.h"
 #include <stdio.h>
 
 #ifndef EXIT_SUCCESS
@@ -30,10 +32,10 @@ const char ruby_version[] = RUBY_VERSION;
 const char ruby_release_date[] = RUBY_RELEASE_DATE;
 const char ruby_platform[] = RUBY_PLATFORM;
 const int ruby_patchlevel = RUBY_PATCHLEVEL;
-const char ruby_description[] = RUBY_DESCRIPTION;
+const char ruby_description[] = RUBY_DESCRIPTION_WITH("");
+const char ruby_description_with_jit[] = RUBY_DESCRIPTION_WITH(" +JIT");
 const char ruby_copyright[] = RUBY_COPYRIGHT;
 const char ruby_engine[] = "ruby";
-VALUE ruby_engine_name = Qnil;
 
 /*! Defines platform-depended Ruby-level constants */
 void
@@ -42,6 +44,7 @@ Init_version(void)
     enum {ruby_patchlevel = RUBY_PATCHLEVEL};
     enum {ruby_revision = RUBY_REVISION};
     VALUE version;
+    VALUE ruby_engine_name;
     /*
      * The running version of ruby
      */
@@ -65,6 +68,7 @@ Init_version(void)
     rb_define_global_const("RUBY_REVISION", MKINT(revision));
     /*
      * The full ruby version string, like <tt>ruby -v</tt> prints'
+     * This might be overwritten by mjit_init().
      */
     rb_define_global_const("RUBY_DESCRIPTION", MKSTR(description));
     /*
@@ -75,6 +79,7 @@ Init_version(void)
      * The engine or interpreter this ruby uses.
      */
     rb_define_global_const("RUBY_ENGINE", ruby_engine_name = MKSTR(engine));
+    ruby_set_script_name(ruby_engine_name);
     /*
      * The version of the engine or interpreter this ruby uses.
      */
@@ -85,7 +90,12 @@ Init_version(void)
 void
 ruby_show_version(void)
 {
-    PRINT(description);
+    if (mjit_opts.on) {
+        PRINT(description_with_jit);
+    }
+    else {
+        PRINT(description);
+    }
 #ifdef RUBY_LAST_COMMIT_TITLE
     fputs("last_commit=" RUBY_LAST_COMMIT_TITLE, stdout);
 #endif
@@ -95,12 +105,10 @@ ruby_show_version(void)
     fflush(stdout);
 }
 
-/*! Prints the copyright notice of the CRuby interpreter to stdout and \em exits
- *  this process successfully.
- */
+/*! Prints the copyright notice of the CRuby interpreter to stdout. */
 void
 ruby_show_copyright(void)
 {
     PRINT(copyright);
-    exit(EXIT_SUCCESS);
+    fflush(stdout);
 }

@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 require 'rubygems/test_case'
 require 'rubygems/ext'
 require 'rubygems/installer'
@@ -31,7 +32,7 @@ class TestGemExtBuilder < Gem::TestCase
     results = []
 
     Dir.chdir @ext do
-      open 'Makefile', 'w' do |io|
+      File.open 'Makefile', 'w' do |io|
         io.puts <<-MAKEFILE
 all:
 \t@#{Gem.ruby} -e "puts %Q{all: \#{ENV['DESTDIR']}}"
@@ -71,7 +72,7 @@ install:
     results = []
 
     Dir.chdir @ext do
-      open 'Makefile', 'w' do |io|
+      File.open 'Makefile', 'w' do |io|
         io.puts <<-MAKEFILE
 all:
 \t@#{Gem.ruby} -e "puts %Q{all: \#{ENV['DESTDIR']}}"
@@ -106,7 +107,7 @@ install:
 
     extconf_rb = File.join ext_dir, 'extconf.rb'
 
-    open extconf_rb, 'w' do |f|
+    File.open extconf_rb, 'w' do |f|
       f.write <<-'RUBY'
         require 'mkmf'
 
@@ -133,6 +134,11 @@ install:
   end
 
   def test_build_extensions_with_gemhome_with_space
+    # Details: https://github.com/rubygems/rubygems/issues/977#issuecomment-171544940
+    if win_platform? && RUBY_VERSION <= '2.0'
+      skip 'gemhome with spaces does not work with Ruby 1.9.x on Windows'
+    end
+
     new_gemhome = File.join @tempdir, 'gem home'
     File.rename(@gemhome, new_gemhome)
     @gemhome = new_gemhome
@@ -162,7 +168,7 @@ install:
 
     extconf_rb = File.join ext_dir, 'extconf.rb'
 
-    open extconf_rb, 'w' do |f|
+    File.open extconf_rb, 'w' do |f|
       f.write <<-'RUBY'
         require 'mkmf'
 
@@ -233,7 +239,7 @@ install:
 
     assert_match(/\AERROR: Failed to build gem native extension.$/, e.message)
 
-    assert_equal "Building native extensions.  This could take a while...\n",
+    assert_equal "Building native extensions. This could take a while...\n",
                  @ui.output
     assert_equal '', @ui.error
 
@@ -266,7 +272,7 @@ install:
 
     assert_match(/^\s*No builder for extension ''$/, e.message)
 
-    assert_equal "Building native extensions.  This could take a while...\n",
+    assert_equal "Building native extensions. This could take a while...\n",
                  @ui.output
     assert_equal '', @ui.error
 
@@ -284,7 +290,7 @@ install:
 
     FileUtils.mkdir_p @spec.gem_dir
 
-    open File.join(@spec.gem_dir, "extconf.rb"), "w" do |f|
+    File.open File.join(@spec.gem_dir, "extconf.rb"), "w" do |f|
       f.write <<-'RUBY'
         puts "IN EXTCONF"
         extconf_args = File.join File.dirname(__FILE__), 'extconf_args'
@@ -317,7 +323,7 @@ install:
 
     build_info_file = File.join build_info_dir, "#{@spec.full_name}.info"
 
-    open build_info_file, 'w' do |io|
+    File.open build_info_file, 'w' do |io|
       io.puts '--with-foo-dir=/nonexistent'
     end
 
@@ -333,4 +339,3 @@ install:
   end
 
 end
-

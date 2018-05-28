@@ -16,17 +16,12 @@
 #endif
 
 #define RB_NATIVETHREAD_LOCK_INIT PTHREAD_MUTEX_INITIALIZER
-#define RB_NATIVETHREAD_COND_INIT { PTHREAD_COND_INITIALIZER, }
+#define RB_NATIVETHREAD_COND_INIT PTHREAD_COND_INITIALIZER
 
-typedef struct rb_thread_cond_struct {
-    pthread_cond_t cond;
-#ifdef HAVE_CLOCKID_T
-    clockid_t clockid;
-#endif
-} rb_nativethread_cond_t;
+typedef pthread_cond_t rb_nativethread_cond_t;
 
 typedef struct native_thread_data_struct {
-    void *signal_thread_list;
+    struct list_node ubf_list;
     rb_nativethread_cond_t sleep_cond;
 } native_thread_data_t;
 

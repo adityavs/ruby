@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 #
 #   shell/command-controller.rb -
 #       $Release Version: 0.7 $
@@ -10,7 +11,6 @@
 #
 
 require "e2mmap"
-require "thread"
 
 require "shell/error"
 require "shell/filter"
@@ -53,8 +53,9 @@ class Shell
     # include run file.
     #
     def self.run_config
+      rc = "~/.rb_shell"
       begin
-        load File.expand_path("~/.rb_shell") if ENV.key?("HOME")
+        load File.expand_path(rc) if ENV.key?("HOME")
       rescue LoadError, Errno::ENOENT
       rescue
         print "load error: #{rc}\n"

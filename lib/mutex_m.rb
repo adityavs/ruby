@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 #
 #   mutex_m.rb -
 #       $Release Version: 3.0$
@@ -8,9 +9,6 @@
 #       patched by akira yamada
 #
 # --
-
-
-require 'thread'
 
 # = mutex_m.rb
 #
@@ -101,7 +99,7 @@ module Mutex_m
   private
 
   def mu_initialize # :nodoc:
-    @_mutex = Mutex.new
+    @_mutex = Thread::Mutex.new
   end
 
   def initialize(*args) # :nodoc:

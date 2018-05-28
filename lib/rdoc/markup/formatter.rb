@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 ##
 # Base class for RDoc markup formatters
 #

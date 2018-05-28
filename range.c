@@ -18,12 +18,11 @@
 #include <math.h>
 
 VALUE rb_cRange;
-static ID id_beg, id_end, id_excl, id_integer_p, id_div;
+static ID id_beg, id_end, id_excl;
 #define id_cmp idCmp
 #define id_succ idSucc
 
 static VALUE r_cover_p(VALUE, VALUE, VALUE, VALUE);
-static VALUE range_include(VALUE range, VALUE val);
 
 #define RANGE_BEG(r) (RSTRUCT(r)->as.ary[0])
 #define RANGE_END(r) (RSTRUCT(r)->as.ary[1])
@@ -35,33 +34,15 @@ static VALUE range_include(VALUE range, VALUE val);
 
 #define EXCL(r) RTEST(RANGE_EXCL(r))
 
-static VALUE
-range_failed(void)
-{
-    rb_raise(rb_eArgError, "bad value for range");
-    return Qnil;		/* dummy */
-}
-
-static VALUE
-range_check(VALUE *args)
-{
-    return rb_funcall(args[0], id_cmp, 1, args[1]);
-}
-
 static void
 range_init(VALUE range, VALUE beg, VALUE end, VALUE exclude_end)
 {
-    VALUE args[2];
-
-    args[0] = beg;
-    args[1] = end;
-
-    if (!FIXNUM_P(beg) || !FIXNUM_P(end)) {
+    if ((!FIXNUM_P(beg) || !FIXNUM_P(end)) && !NIL_P(end)) {
 	VALUE v;
 
-	v = rb_rescue(range_check, (VALUE)args, range_failed, 0);
+	v = rb_funcall(beg, id_cmp, 1, end);
 	if (NIL_P(v))
-	    range_failed();
+	    rb_raise(rb_eArgError, "bad value for range");
     }
 
     RANGE_SET_EXCL(range, exclude_end);
@@ -81,6 +62,7 @@ rb_range_new(VALUE beg, VALUE end, int exclude_end)
 static void
 range_modify(VALUE range)
 {
+    rb_check_frozen(range);
     /* Ranges are immutable, so that they should be initialized only once. */
     if (RANGE_EXCL(range) != Qnil) {
 	rb_name_err_raise("`initialize' called twice", range, ID2SYM(idInitialize));
@@ -227,7 +209,7 @@ range_eql(VALUE range, VALUE obj)
 
 /*
  * call-seq:
- *   rng.hash    -> fixnum
+ *   rng.hash    -> integer
  *
  * Compute a hash-code for this range. Two ranges with equal
  * begin and end points (using <code>eql?</code>), and the same
@@ -254,7 +236,7 @@ range_hash(VALUE range)
 }
 
 static void
-range_each_func(VALUE range, rb_block_call_func *func, VALUE arg)
+range_each_func(VALUE range, int (*func)(VALUE, VALUE), VALUE arg)
 {
     int c;
     VALUE b = RANGE_BEG(range);
@@ -263,21 +245,21 @@ range_each_func(VALUE range, rb_block_call_func *func, VALUE arg)
 
     if (EXCL(range)) {
 	while (r_less(v, e) < 0) {
-	    (*func) (v, arg, 0, 0, 0);
+	    if ((*func)(v, arg)) break;
 	    v = rb_funcallv(v, id_succ, 0, 0);
 	}
     }
     else {
 	while ((c = r_less(v, e)) <= 0) {
-	    (*func) (v, arg, 0, 0, 0);
+	    if ((*func)(v, arg)) break;;
 	    if (!c) break;
 	    v = rb_funcallv(v, id_succ, 0, 0);
 	}
     }
 }
 
-static VALUE
-sym_step_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, arg))
+static int
+sym_step_i(VALUE i, VALUE arg)
 {
     VALUE *iter = (VALUE *)arg;
 
@@ -291,11 +273,11 @@ sym_step_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, arg))
 	rb_yield(rb_str_intern(i));
 	iter[0] = iter[1];
     }
-    return Qnil;
+    return 0;
 }
 
-static VALUE
-step_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, arg))
+static int
+step_i(VALUE i, VALUE arg)
 {
     VALUE *iter = (VALUE *)arg;
 
@@ -309,7 +291,7 @@ step_i(RB_BLOCK_CALL_FUNC_ARGLIST(i, arg))
 	rb_yield(i);
 	iter[0] = iter[1];
     }
-    return Qnil;
+    return 0;
 }
 
 static int
@@ -335,21 +317,30 @@ linear_object_p(VALUE obj)
 }
 
 static VALUE
+check_step_domain(VALUE step)
+{
+    VALUE zero = INT2FIX(0);
+    int cmp;
+    if (!rb_obj_is_kind_of(step, rb_cNumeric)) {
+	step = rb_to_int(step);
+    }
+    cmp = rb_cmpint(rb_funcallv(step, idCmp, 1, &zero), step, zero);
+    if (cmp < 0) {
+	rb_raise(rb_eArgError, "step can't be negative");
+    }
+    else if (cmp == 0) {
+	rb_raise(rb_eArgError, "step can't be 0");
+    }
+    return step;
+}
+
+static VALUE
 range_step_size(VALUE range, VALUE args, VALUE eobj)
 {
     VALUE b = RANGE_BEG(range), e = RANGE_END(range);
     VALUE step = INT2FIX(1);
     if (args) {
-	step = RARRAY_AREF(args, 0);
-	if (!rb_obj_is_kind_of(step, rb_cNumeric)) {
-	    step = rb_to_int(step);
-	}
-    }
-    if (rb_funcall(step, '<', 1, INT2FIX(0))) {
-	rb_raise(rb_eArgError, "step can't be negative");
-    }
-    else if (!rb_funcall(step, '>', 1, INT2FIX(0))) {
-	rb_raise(rb_eArgError, "step can't be 0");
+	step = check_step_domain(RARRAY_AREF(args, 0));
     }
 
     if (rb_obj_is_kind_of(b, rb_cNumeric) && rb_obj_is_kind_of(e, rb_cNumeric)) {
@@ -406,18 +397,21 @@ range_step(int argc, VALUE *argv, VALUE range)
     }
     else {
 	rb_scan_args(argc, argv, "01", &step);
-	if (!rb_obj_is_kind_of(step, rb_cNumeric)) {
-	    step = rb_to_int(step);
-	}
-	if (rb_funcall(step, '<', 1, INT2FIX(0))) {
-	    rb_raise(rb_eArgError, "step can't be negative");
-	}
-	else if (!rb_funcall(step, '>', 1, INT2FIX(0))) {
-	    rb_raise(rb_eArgError, "step can't be 0");
-	}
+	step = check_step_domain(step);
     }
 
-    if (FIXNUM_P(b) && FIXNUM_P(e) && FIXNUM_P(step)) { /* fixnums are special */
+    if (FIXNUM_P(b) && NIL_P(e) && FIXNUM_P(step)) {
+	long i = FIX2LONG(b), unit = FIX2LONG(step);
+	do {
+	    rb_yield(LONG2FIX(i));
+	    i += unit;          /* FIXABLE+FIXABLE never overflow */
+	} while (FIXABLE(i));
+	b = LONG2NUM(i);
+
+	for (;; b = rb_big_plus(b, step))
+	    rb_yield(b);
+    }
+    else if (FIXNUM_P(b) && FIXNUM_P(e) && FIXNUM_P(step)) { /* fixnums are special */
 	long end = FIX2LONG(e);
 	long i, unit = FIX2LONG(step);
 
@@ -431,16 +425,20 @@ range_step(int argc, VALUE *argv, VALUE range)
 	}
 
     }
-    else if (SYMBOL_P(b) && SYMBOL_P(e)) { /* symbols are special */
-	VALUE args[2], iter[2];
-
-	args[0] = rb_sym2str(e);
-	args[1] = EXCL(range) ? Qtrue : Qfalse;
+    else if (SYMBOL_P(b) && (NIL_P(e) || SYMBOL_P(e))) { /* symbols are special */
+	VALUE iter[2];
 	iter[0] = INT2FIX(1);
 	iter[1] = step;
-	rb_block_call(rb_sym2str(b), rb_intern("upto"), 2, args, sym_step_i, (VALUE)iter);
+
+	b = rb_sym2str(b);
+	if (NIL_P(e)) {
+	    rb_str_upto_endless_each(b, sym_step_i, (VALUE)iter);
+	}
+	else {
+	    rb_str_upto_each(b, rb_sym2str(e), EXCL(range), sym_step_i, (VALUE)iter);
+	}
     }
-    else if (ruby_float_step(b, e, step, EXCL(range))) {
+    else if (ruby_float_step(b, e, step, EXCL(range), TRUE)) {
 	/* done */
     }
     else if (rb_obj_is_kind_of(b, rb_cNumeric) ||
@@ -450,7 +448,7 @@ range_step(int argc, VALUE *argv, VALUE range)
 	VALUE v = b;
 	int i = 0;
 
-	while (RTEST(rb_funcall(v, op, 1, e))) {
+	while (NIL_P(e) || RTEST(rb_funcall(v, op, 1, e))) {
 	    rb_yield(v);
 	    i++;
 	    v = rb_funcall(b, '+', 1, rb_funcall(INT2NUM(i), '*', 1, step));
@@ -460,14 +458,18 @@ range_step(int argc, VALUE *argv, VALUE range)
 	tmp = rb_check_string_type(b);
 
 	if (!NIL_P(tmp)) {
-	    VALUE args[2], iter[2];
+	    VALUE iter[2];
 
 	    b = tmp;
-	    args[0] = e;
-	    args[1] = EXCL(range) ? Qtrue : Qfalse;
 	    iter[0] = INT2FIX(1);
 	    iter[1] = step;
-	    rb_block_call(b, rb_intern("upto"), 2, args, step_i, (VALUE)iter);
+
+	    if (NIL_P(e)) {
+		rb_str_upto_endless_each(b, step_i, (VALUE)iter);
+	    }
+	    else {
+		rb_str_upto_each(b, e, EXCL(range), step_i, (VALUE)iter);
+	    }
 	}
 	else {
 	    VALUE args[2];
@@ -516,8 +518,70 @@ double_as_int64(double d)
 static int
 is_integer_p(VALUE v)
 {
-    VALUE is_int = rb_check_funcall(v, id_integer_p, 0, 0);
+    ID id_integer_p;
+    VALUE is_int;
+    CONST_ID(id_integer_p, "integer?");
+    is_int = rb_check_funcall(v, id_integer_p, 0, 0);
     return RTEST(is_int) && is_int != Qundef;
+}
+
+static VALUE
+bsearch_integer_range(VALUE beg, VALUE end, int excl)
+{
+    VALUE satisfied = Qnil;
+    int smaller;
+
+#define BSEARCH_CHECK(expr) \
+    do { \
+	VALUE val = (expr); \
+	VALUE v = rb_yield(val); \
+	if (FIXNUM_P(v)) { \
+	    if (v == INT2FIX(0)) return val; \
+	    smaller = (SIGNED_VALUE)v < 0; \
+	} \
+	else if (v == Qtrue) { \
+	    satisfied = val; \
+	    smaller = 1; \
+	} \
+	else if (v == Qfalse || v == Qnil) { \
+	    smaller = 0; \
+	} \
+	else if (rb_obj_is_kind_of(v, rb_cNumeric)) { \
+	    int cmp = rb_cmpint(rb_funcall(v, id_cmp, 1, INT2FIX(0)), v, INT2FIX(0)); \
+	    if (!cmp) return val; \
+	    smaller = cmp < 0; \
+	} \
+	else { \
+	    rb_raise(rb_eTypeError, "wrong argument type %"PRIsVALUE \
+		     " (must be numeric, true, false or nil)", \
+		     rb_obj_class(v)); \
+	} \
+    } while (0)
+
+    VALUE low = rb_to_int(beg);
+    VALUE high = rb_to_int(end);
+    VALUE mid, org_high;
+    ID id_div;
+    CONST_ID(id_div, "div");
+
+    if (excl) high = rb_funcall(high, '-', 1, INT2FIX(1));
+    org_high = high;
+
+    while (rb_cmpint(rb_funcall(low, id_cmp, 1, high), low, high) < 0) {
+	mid = rb_funcall(rb_funcall(high, '+', 1, low), id_div, 1, INT2FIX(2));
+	BSEARCH_CHECK(mid);
+	if (smaller) {
+	    high = mid;
+	}
+	else {
+	    low = rb_funcall(mid, '+', 1, INT2FIX(1));
+	}
+    }
+    if (rb_equal(low, org_high)) {
+	BSEARCH_CHECK(low);
+	if (!smaller) return Qnil;
+    }
+    return satisfied;
 }
 
 /*
@@ -592,33 +656,6 @@ range_bsearch(VALUE range)
      * (-1...0.0).bsearch to yield -0.0.
      */
 
-#define BSEARCH_CHECK(expr) \
-    do { \
-	VALUE val = (expr); \
-	VALUE v = rb_yield(val); \
-	if (FIXNUM_P(v)) { \
-	    if (v == INT2FIX(0)) return val; \
-	    smaller = (SIGNED_VALUE)v < 0; \
-	} \
-	else if (v == Qtrue) { \
-	    satisfied = val; \
-	    smaller = 1; \
-	} \
-	else if (v == Qfalse || v == Qnil) { \
-	    smaller = 0; \
-	} \
-	else if (rb_obj_is_kind_of(v, rb_cNumeric)) { \
-	    int cmp = rb_cmpint(rb_funcall(v, id_cmp, 1, INT2FIX(0)), v, INT2FIX(0)); \
-	    if (!cmp) return val; \
-	    smaller = cmp < 0; \
-	} \
-	else { \
-	    rb_raise(rb_eTypeError, "wrong argument type %"PRIsVALUE \
-		     " (must be numeric, true, false or nil)", \
-		     rb_obj_class(v)); \
-	} \
-    } while (0)
-
 #define BSEARCH(conv) \
     do { \
 	RETURN_ENUMERATOR(range, 0, 0); \
@@ -655,34 +692,26 @@ range_bsearch(VALUE range)
 #if SIZEOF_DOUBLE == 8 && defined(HAVE_INT64_T)
     else if (RB_TYPE_P(beg, T_FLOAT) || RB_TYPE_P(end, T_FLOAT)) {
 	int64_t low  = double_as_int64(RFLOAT_VALUE(rb_Float(beg)));
-	int64_t high = double_as_int64(RFLOAT_VALUE(rb_Float(end)));
+	int64_t high = double_as_int64(NIL_P(end) ? HUGE_VAL : RFLOAT_VALUE(rb_Float(end)));
 	int64_t mid, org_high;
 	BSEARCH(int64_as_double_to_num);
     }
 #endif
     else if (is_integer_p(beg) && is_integer_p(end)) {
-	VALUE low = rb_to_int(beg);
-	VALUE high = rb_to_int(end);
-	VALUE mid, org_high;
 	RETURN_ENUMERATOR(range, 0, 0);
-	if (EXCL(range)) high = rb_funcall(high, '-', 1, INT2FIX(1));
-	org_high = high;
-
-	while (rb_cmpint(rb_funcall(low, id_cmp, 1, high), low, high) < 0) {
-	    mid = rb_funcall(rb_funcall(high, '+', 1, low), id_div, 1, INT2FIX(2));
+	return bsearch_integer_range(beg, end, EXCL(range));
+    }
+    else if (is_integer_p(beg) && NIL_P(end)) {
+	VALUE diff = LONG2FIX(1);
+	RETURN_ENUMERATOR(range, 0, 0);
+	while (1) {
+	    VALUE mid = rb_funcall(beg, '+', 1, diff);
 	    BSEARCH_CHECK(mid);
 	    if (smaller) {
-		high = mid;
+		return bsearch_integer_range(beg, mid, 0);
 	    }
-	    else {
-		low = rb_funcall(mid, '+', 1, INT2FIX(1));
-	    }
+	    diff = rb_funcall(diff, '*', 1, LONG2FIX(2));
 	}
-	if (rb_equal(low, org_high)) {
-	    BSEARCH_CHECK(low);
-	    if (!smaller) return Qnil;
-	}
-	return satisfied;
     }
     else {
 	rb_raise(rb_eTypeError, "can't do binary search for %s", rb_obj_classname(beg));
@@ -690,18 +719,18 @@ range_bsearch(VALUE range)
     return range;
 }
 
-static VALUE
-each_i(RB_BLOCK_CALL_FUNC_ARGLIST(v, arg))
+static int
+each_i(VALUE v, VALUE arg)
 {
     rb_yield(v);
-    return Qnil;
+    return 0;
 }
 
-static VALUE
-sym_each_i(RB_BLOCK_CALL_FUNC_ARGLIST(v, arg))
+static int
+sym_each_i(VALUE v, VALUE arg)
 {
     rb_yield(rb_str_intern(v));
-    return Qnil;
+    return 0;
 }
 
 /*
@@ -757,45 +786,105 @@ static VALUE
 range_each(VALUE range)
 {
     VALUE beg, end;
+    long i, lim;
 
     RETURN_SIZED_ENUMERATOR(range, 0, 0, range_enum_size);
 
     beg = RANGE_BEG(range);
     end = RANGE_END(range);
 
-    if (FIXNUM_P(beg) && FIXNUM_P(end)) { /* fixnums are special */
-	long lim = FIX2LONG(end);
-	long i;
-
+    if (FIXNUM_P(beg) && NIL_P(end)) {
+      fixnum_endless:
+	i = FIX2LONG(beg);
+	while (FIXABLE(i)) {
+	    rb_yield(LONG2FIX(i++));
+	}
+	beg = LONG2NUM(i);
+      bignum_endless:
+	for (;; beg = rb_big_plus(beg, INT2FIX(1)))
+	    rb_yield(beg);
+    }
+    else if (FIXNUM_P(beg) && FIXNUM_P(end)) { /* fixnums are special */
+      fixnum_loop:
+	lim = FIX2LONG(end);
 	if (!EXCL(range))
 	    lim += 1;
 	for (i = FIX2LONG(beg); i < lim; i++) {
 	    rb_yield(LONG2FIX(i));
 	}
     }
-    else if (SYMBOL_P(beg) && SYMBOL_P(end)) { /* symbols are special */
-	VALUE args[2];
-
-	args[0] = rb_sym2str(end);
-	args[1] = EXCL(range) ? Qtrue : Qfalse;
-	rb_block_call(rb_sym2str(beg), rb_intern("upto"), 2, args, sym_each_i, 0);
+    else if (RB_INTEGER_TYPE_P(beg) && (NIL_P(end) || RB_INTEGER_TYPE_P(end))) {
+	if (SPECIAL_CONST_P(end) || RBIGNUM_POSITIVE_P(end)) { /* end >= FIXNUM_MIN */
+	    if (!FIXNUM_P(beg)) {
+		if (RBIGNUM_NEGATIVE_P(beg)) {
+		    do {
+			rb_yield(beg);
+		    } while (!FIXNUM_P(beg = rb_big_plus(beg, INT2FIX(1))));
+		    if (NIL_P(end)) goto fixnum_endless;
+		    if (FIXNUM_P(end)) goto fixnum_loop;
+		}
+		else {
+		    if (NIL_P(end)) goto bignum_endless;
+		    if (FIXNUM_P(end)) return range;
+		}
+	    }
+	    if (FIXNUM_P(beg)) {
+		i = FIX2LONG(beg);
+		do {
+		    rb_yield(LONG2FIX(i));
+		} while (POSFIXABLE(++i));
+		beg = LONG2NUM(i);
+	    }
+	    ASSUME(!FIXNUM_P(beg));
+	    ASSUME(!SPECIAL_CONST_P(end));
+	}
+	if (!FIXNUM_P(beg) && RBIGNUM_SIGN(beg) == RBIGNUM_SIGN(end)) {
+	    if (EXCL(range)) {
+		while (rb_big_cmp(beg, end) == INT2FIX(-1)) {
+		    rb_yield(beg);
+		    beg = rb_big_plus(beg, INT2FIX(1));
+		}
+	    }
+	    else {
+		VALUE c;
+		while ((c = rb_big_cmp(beg, end)) != INT2FIX(1)) {
+		    rb_yield(beg);
+		    if (c == INT2FIX(0)) break;
+		    beg = rb_big_plus(beg, INT2FIX(1));
+		}
+	    }
+	}
+    }
+    else if (SYMBOL_P(beg) && (NIL_P(end) || SYMBOL_P(end))) { /* symbols are special */
+	beg = rb_sym2str(beg);
+	if (NIL_P(end)) {
+	    rb_str_upto_endless_each(beg, sym_each_i, 0);
+	}
+	else {
+	    rb_str_upto_each(beg, rb_sym2str(end), EXCL(range), sym_each_i, 0);
+	}
     }
     else {
 	VALUE tmp = rb_check_string_type(beg);
 
 	if (!NIL_P(tmp)) {
-	    VALUE args[2];
-
-	    args[0] = end;
-	    args[1] = EXCL(range) ? Qtrue : Qfalse;
-	    rb_block_call(tmp, rb_intern("upto"), 2, args, each_i, 0);
+	    if (!NIL_P(end)) {
+		rb_str_upto_each(tmp, end, EXCL(range), each_i, 0);
+	    }
+	    else {
+		rb_str_upto_endless_each(tmp, each_i, 0);
+	    }
 	}
 	else {
 	    if (!discrete_object_p(beg)) {
 		rb_raise(rb_eTypeError, "can't iterate from %s",
 			 rb_obj_classname(beg));
 	    }
-	    range_each_func(range, each_i, 0);
+	    if (!NIL_P(end))
+		range_each_func(range, each_i, 0);
+	    else
+		for (;; beg = rb_funcallv(beg, id_succ, 0, 0))
+		    rb_yield(beg);
 	}
     }
     return range;
@@ -911,7 +1000,8 @@ range_last(int argc, VALUE *argv, VALUE range)
  *     rng.min(n) {| a,b | block }   -> array
  *
  *  Returns the minimum value in the range. Returns +nil+ if the begin
- *  value of the range is larger than the end value.
+ *  value of the range is larger than the end value. Returns +nil+ if
+ *  the begin value of an exclusive range is equal to the end value.
  *
  *  Can be given an optional block to override the default comparison
  *  method <code>a <=> b</code>.
@@ -930,9 +1020,10 @@ range_min(int argc, VALUE *argv, VALUE range)
 	return range_first(argc, argv, range);
     }
     else {
+	struct cmp_opt_data cmp_opt = { 0, 0 };
 	VALUE b = RANGE_BEG(range);
 	VALUE e = RANGE_END(range);
-	int c = rb_cmpint(rb_funcall(b, id_cmp, 1, e), b, e);
+	int c = NIL_P(e) ? -1 : OPTIMIZED_CMP(b, e, cmp_opt);
 
 	if (c > 0 || (c == 0 && EXCL(range)))
 	    return Qnil;
@@ -948,7 +1039,8 @@ range_min(int argc, VALUE *argv, VALUE range)
  *     rng.max(n) {| a,b | block }   -> obj
  *
  *  Returns the maximum value in the range. Returns +nil+ if the begin
- *  value of the range larger than the end value.
+ *  value of the range larger than the end value. Returns +nil+ if
+ *  the begin value of an exclusive range is equal to the end value.
  *
  *  Can be given an optional block to override the default comparison
  *  method <code>a <=> b</code>.
@@ -962,29 +1054,32 @@ range_max(int argc, VALUE *argv, VALUE range)
     VALUE e = RANGE_END(range);
     int nm = FIXNUM_P(e) || rb_obj_is_kind_of(e, rb_cNumeric);
 
+    if (NIL_P(e)) return Qnil;
+
     if (rb_block_given_p() || (EXCL(range) && !nm) || argc) {
-	return rb_call_super(argc, argv);
+        return rb_call_super(argc, argv);
     }
     else {
-	VALUE b = RANGE_BEG(range);
-	int c = rb_cmpint(rb_funcall(b, id_cmp, 1, e), b, e);
+        struct cmp_opt_data cmp_opt = { 0, 0 };
+        VALUE b = RANGE_BEG(range);
+        int c = OPTIMIZED_CMP(b, e, cmp_opt);
 
-	if (c > 0)
-	    return Qnil;
-	if (EXCL(range)) {
-	    if (!FIXNUM_P(e) && !rb_obj_is_kind_of(e, rb_cInteger)) {
-		rb_raise(rb_eTypeError, "cannot exclude non Integer end value");
-	    }
-	    if (c == 0) return Qnil;
-	    if (!FIXNUM_P(b) && !rb_obj_is_kind_of(b,rb_cInteger)) {
-		rb_raise(rb_eTypeError, "cannot exclude end value with non Integer begin value");
-	    }
-	    if (FIXNUM_P(e)) {
-		return LONG2NUM(FIX2LONG(e) - 1);
-	    }
-	    return rb_funcall(e, '-', 1, INT2FIX(1));
-	}
-	return e;
+        if (c > 0)
+            return Qnil;
+        if (EXCL(range)) {
+            if (!RB_INTEGER_TYPE_P(e)) {
+                rb_raise(rb_eTypeError, "cannot exclude non Integer end value");
+            }
+            if (c == 0) return Qnil;
+            if (!RB_INTEGER_TYPE_P(b)) {
+                rb_raise(rb_eTypeError, "cannot exclude end value with non Integer begin value");
+            }
+            if (FIXNUM_P(e)) {
+                return LONG2NUM(FIX2LONG(e) - 1);
+            }
+            return rb_funcall(e, '-', 1, INT2FIX(1));
+        }
+        return e;
     }
 }
 
@@ -1000,11 +1095,14 @@ rb_range_values(VALUE range, VALUE *begp, VALUE *endp, int *exclp)
 	excl = EXCL(range);
     }
     else {
-	if (!rb_respond_to(range, id_beg)) return (int)Qfalse;
-	if (!rb_respond_to(range, id_end)) return (int)Qfalse;
-	b = rb_funcall(range, id_beg, 0);
-	e = rb_funcall(range, id_end, 0);
-	excl = RTEST(rb_funcall(range, rb_intern("exclude_end?"), 0));
+	VALUE x;
+	b = rb_check_funcall(range, id_beg, 0, 0);
+	if (b == Qundef) return (int)Qfalse;
+	e = rb_check_funcall(range, id_end, 0, 0);
+	if (e == Qundef) return (int)Qfalse;
+	x = rb_check_funcall(range, rb_intern("exclude_end?"), 0, 0);
+	if (x == Qundef) return (int)Qfalse;
+	excl = RTEST(x);
     }
     *begp = b;
     *endp = e;
@@ -1022,7 +1120,8 @@ rb_range_beg_len(VALUE range, long *begp, long *lenp, long len, int err)
     if (!rb_range_values(range, &b, &e, &excl))
 	return Qfalse;
     beg = NUM2LONG(b);
-    end = NUM2LONG(e);
+    end = NIL_P(e) ? -1 : NUM2LONG(e);
+    if (NIL_P(e)) excl = 0;
     origbeg = beg;
     origend = end;
     if (beg < 0) {
@@ -1074,7 +1173,7 @@ range_to_s(VALUE range)
     str = rb_str_dup(str);
     rb_str_cat(str, "...", EXCL(range) ? 3 : 2);
     rb_str_append(str, str2);
-    OBJ_INFECT(str, str2);
+    OBJ_INFECT(str, range);
 
     return str;
 }
@@ -1082,17 +1181,17 @@ range_to_s(VALUE range)
 static VALUE
 inspect_range(VALUE range, VALUE dummy, int recur)
 {
-    VALUE str, str2;
+    VALUE str, str2 = Qundef;
 
     if (recur) {
 	return rb_str_new2(EXCL(range) ? "(... ... ...)" : "(... .. ...)");
     }
     str = rb_inspect(RANGE_BEG(range));
-    str2 = rb_inspect(RANGE_END(range));
+    if (!NIL_P(RANGE_END(range))) str2 = rb_inspect(RANGE_END(range));
     str = rb_str_dup(str);
     rb_str_cat(str, "...", EXCL(range) ? 3 : 2);
-    rb_str_append(str, str2);
-    OBJ_INFECT(str, str2);
+    if (str2 != Qundef) rb_str_append(str, str2);
+    OBJ_INFECT(str, range);
 
     return str;
 }
@@ -1112,6 +1211,8 @@ range_inspect(VALUE range)
 {
     return rb_exec_recursive(inspect_range, range, 0);
 }
+
+static VALUE range_include_internal(VALUE range, VALUE val);
 
 /*
  *  call-seq:
@@ -1135,12 +1236,9 @@ range_inspect(VALUE range)
 static VALUE
 range_eqq(VALUE range, VALUE val)
 {
-    ID pred;
-    CONST_ID(pred, "include?");
-    if (rb_method_basic_definition_p(RBASIC_CLASS(range), pred)) {
-	return range_include(range, val);
-    }
-    return rb_funcall(range, pred, 1, val);
+    VALUE ret = range_include_internal(range, val);
+    if (ret != Qundef) return ret;
+    return r_cover_p(range, RANGE_BEG(range), RANGE_END(range), val);
 }
 
 
@@ -1161,6 +1259,14 @@ range_eqq(VALUE range, VALUE val)
 static VALUE
 range_include(VALUE range, VALUE val)
 {
+    VALUE ret = range_include_internal(range, val);
+    if (ret != Qundef) return ret;
+    return rb_call_super(1, &val);
+}
+
+static VALUE
+range_include_internal(VALUE range, VALUE val)
+{
     VALUE beg = RANGE_BEG(range);
     VALUE end = RANGE_END(range);
     int nv = FIXNUM_P(beg) || FIXNUM_P(end) ||
@@ -1171,12 +1277,19 @@ range_include(VALUE range, VALUE val)
 	!NIL_P(rb_check_to_integer(end, "to_int"))) {
 	return r_cover_p(range, beg, end, val);
     }
-    else if (RB_TYPE_P(beg, T_STRING) && RB_TYPE_P(end, T_STRING)) {
-	VALUE rb_str_include_range_p(VALUE beg, VALUE end, VALUE val, VALUE exclusive);
-	return rb_str_include_range_p(beg, end, val, RANGE_EXCL(range));
+    else if (RB_TYPE_P(beg, T_STRING)) {
+	if (RB_TYPE_P(end, T_STRING)) {
+	    VALUE rb_str_include_range_p(VALUE beg, VALUE end, VALUE val, VALUE exclusive);
+	    return rb_str_include_range_p(beg, end, val, RANGE_EXCL(range));
+	}
+	else if (NIL_P(end)) {
+	    VALUE r = rb_funcall(beg, id_cmp, 1, val);
+	    if (NIL_P(r)) return Qfalse;
+	    if (rb_cmpint(r, beg, val) <= 0) return Qtrue;
+	    return Qfalse;
+	}
     }
-    /* TODO: ruby_frame->this_func = rb_intern("include?"); */
-    return rb_call_super(1, &val);
+    return Qundef;
 }
 
 
@@ -1210,7 +1323,7 @@ r_cover_p(VALUE range, VALUE beg, VALUE end, VALUE val)
 {
     if (r_less(beg, val) <= 0) {
 	int excl = EXCL(range);
-	if (r_less(val, end) <= -excl)
+	if (NIL_P(end) || r_less(val, end) <= -excl)
 	    return Qtrue;
     }
     return Qfalse;
@@ -1233,22 +1346,27 @@ range_dumper(VALUE range)
 static VALUE
 range_loader(VALUE range, VALUE obj)
 {
+    VALUE beg, end, excl;
+
     if (!RB_TYPE_P(obj, T_OBJECT) || RBASIC(obj)->klass != rb_cObject) {
         rb_raise(rb_eTypeError, "not a dumped range object");
     }
 
     range_modify(range);
-    RANGE_SET_BEG(range, rb_ivar_get(obj, id_beg));
-    RANGE_SET_END(range, rb_ivar_get(obj, id_end));
-    RANGE_SET_EXCL(range, rb_ivar_get(obj, id_excl));
+    beg = rb_ivar_get(obj, id_beg);
+    end = rb_ivar_get(obj, id_end);
+    excl = rb_ivar_get(obj, id_excl);
+    if (!NIL_P(excl)) {
+	range_init(range, beg, end, RBOOL(RTEST(excl)));
+    }
     return range;
 }
 
 static VALUE
 range_alloc(VALUE klass)
 {
-  /* rb_struct_alloc_noinit itself should not be used because
-   * rb_marshal_define_compat uses equality of allocation function */
+    /* rb_struct_alloc_noinit itself should not be used because
+     * rb_marshal_define_compat uses equality of allocation function */
     return rb_struct_alloc_noinit(klass);
 }
 
@@ -1318,8 +1436,6 @@ Init_Range(void)
     id_beg = rb_intern("begin");
     id_end = rb_intern("end");
     id_excl = rb_intern("excl");
-    id_integer_p = rb_intern("integer?");
-    id_div = rb_intern("div");
 
     rb_cRange = rb_struct_define_without_accessor(
         "Range", rb_cObject, range_alloc,

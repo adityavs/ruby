@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 require 'test/unit'
 
 class ComplexSub < Complex; end
@@ -40,15 +41,19 @@ class Complex_Test < Test::Unit::TestCase
     c2 = Complex(0)
     c3 = Complex(1)
 
-    assert_equal(true, c.eql?(c2))
-    assert_equal(false, c.eql?(c3))
+    assert_operator(c, :eql?, c2)
+    assert_not_operator(c, :eql?, c3)
 
-    assert_equal(false, c.eql?(0))
+    assert_not_operator(c, :eql?, 0)
   end
 
   def test_hash
-    assert_instance_of(Fixnum, Complex(1,2).hash)
-    assert_instance_of(Fixnum, Complex(1.0,2.0).hash)
+    h = Complex(1,2).hash
+    assert_kind_of(Integer, h)
+    assert_nothing_raised {h.to_s}
+    h = Complex(1.0,2.0).hash
+    assert_kind_of(Integer, h)
+    assert_nothing_raised {h.to_s}
 
     h = {}
     h[Complex(0)] = 0
@@ -74,8 +79,7 @@ class Complex_Test < Test::Unit::TestCase
 
   def test_freeze
     c = Complex(1)
-    c.freeze
-    assert_equal(true, c.frozen?)
+    assert_predicate(c, :frozen?)
     assert_instance_of(String, c.to_s)
   end
 
@@ -188,14 +192,14 @@ class Complex_Test < Test::Unit::TestCase
   def test_attr2
     c = Complex(1)
 
-    assert_equal(false, c.integer?)
-    assert_equal(false, c.real?)
+    assert_not_predicate(c, :integer?)
+    assert_not_predicate(c, :real?)
 
-    assert_equal(true, Complex(0).zero?)
-    assert_equal(true, Complex(0,0).zero?)
-    assert_equal(false, Complex(1,0).zero?)
-    assert_equal(false, Complex(0,1).zero?)
-    assert_equal(false, Complex(1,1).zero?)
+    assert_predicate(Complex(0), :zero?)
+    assert_predicate(Complex(0,0), :zero?)
+    assert_not_predicate(Complex(1,0), :zero?)
+    assert_not_predicate(Complex(0,1), :zero?)
+    assert_not_predicate(Complex(1,1), :zero?)
 
     assert_equal(nil, Complex(0).nonzero?)
     assert_equal(nil, Complex(0,0).nonzero?)
@@ -433,7 +437,7 @@ class Complex_Test < Test::Unit::TestCase
   end
 
   class ObjectX
-    def + (x) Rational(1) end
+    def +(x) Rational(1) end
     alias - +
     alias * +
     alias / +
@@ -533,12 +537,10 @@ class Complex_Test < Test::Unit::TestCase
 
   def test_marshal
     c = Complex(1,2)
-    c.instance_eval{@ivar = 9}
 
     s = Marshal.dump(c)
     c2 = Marshal.load(s)
     assert_equal(c, c2)
-    assert_equal(9, c2.instance_variable_get(:@ivar))
     assert_instance_of(Complex, c2)
 
     c = Complex(Rational(1,2),Rational(2,3))
@@ -550,7 +552,6 @@ class Complex_Test < Test::Unit::TestCase
 
     bug3656 = '[ruby-core:31622]'
     c = Complex(1,2)
-    c.freeze
     assert_predicate(c, :frozen?)
     result = c.marshal_load([2,3]) rescue :fail
     assert_equal(:fail, result, bug3656)
@@ -745,36 +746,56 @@ class Complex_Test < Test::Unit::TestCase
 
   end
 
+  def test_Complex_without_exception
+    assert_nothing_raised(ArgumentError){
+      assert_equal(nil, Complex('5x', exception: false))
+    }
+    assert_nothing_raised(ArgumentError){
+      assert_equal(nil, Complex(Object.new, exception: false))
+    }
+    assert_nothing_raised(ArgumentError){
+      assert_equal(nil, Complex(1, Object.new, exception: false))
+    }
+
+    o = Object.new
+    def o.to_c; raise; end
+    assert_nothing_raised(ArgumentError){
+      assert_equal(nil, Complex(o, exception: false))
+    }
+    assert_nothing_raised(ArgumentError){
+      assert_equal(nil, Complex(1, o, exception: false))
+    }
+  end
+
   def test_respond
     c = Complex(1,1)
-    assert_equal(false, c.respond_to?(:%))
-    assert_equal(false, c.respond_to?(:<))
-    assert_equal(false, c.respond_to?(:<=))
-    assert_equal(false, c.respond_to?(:<=>))
-    assert_equal(false, c.respond_to?(:>))
-    assert_equal(false, c.respond_to?(:>=))
-    assert_equal(false, c.respond_to?(:between?))
-    assert_equal(false, c.respond_to?(:div))
-    assert_equal(false, c.respond_to?(:divmod))
-    assert_equal(false, c.respond_to?(:floor))
-    assert_equal(false, c.respond_to?(:ceil))
-    assert_equal(false, c.respond_to?(:modulo))
-    assert_equal(false, c.respond_to?(:remainder))
-    assert_equal(false, c.respond_to?(:round))
-    assert_equal(false, c.respond_to?(:step))
-    assert_equal(false, c.respond_to?(:tunrcate))
+    assert_not_respond_to(c, :%)
+    assert_not_respond_to(c, :<=>)
+    assert_not_respond_to(c, :div)
+    assert_not_respond_to(c, :divmod)
+    assert_not_respond_to(c, :floor)
+    assert_not_respond_to(c, :ceil)
+    assert_not_respond_to(c, :modulo)
+    assert_not_respond_to(c, :remainder)
+    assert_not_respond_to(c, :round)
+    assert_not_respond_to(c, :step)
+    assert_not_respond_to(c, :tunrcate)
 
-    assert_equal(false, c.respond_to?(:positive?))
-    assert_equal(false, c.respond_to?(:negative?))
-    assert_equal(false, c.respond_to?(:sign))
+    assert_not_respond_to(c, :positive?)
+    assert_not_respond_to(c, :negative?)
+    assert_not_respond_to(c, :sign)
 
-    assert_equal(false, c.respond_to?(:quotient))
-    assert_equal(false, c.respond_to?(:quot))
-    assert_equal(false, c.respond_to?(:quotrem))
+    assert_not_respond_to(c, :quotient)
+    assert_not_respond_to(c, :quot)
+    assert_not_respond_to(c, :quotrem)
 
-    assert_equal(false, c.respond_to?(:gcd))
-    assert_equal(false, c.respond_to?(:lcm))
-    assert_equal(false, c.respond_to?(:gcdlcm))
+    assert_not_respond_to(c, :gcd)
+    assert_not_respond_to(c, :lcm)
+    assert_not_respond_to(c, :gcdlcm)
+
+    (Comparable.instance_methods(false) - Complex.instance_methods(false)).each do |n|
+      assert_not_respond_to(c, n, "Complex##{n}")
+    end
   end
 
   def test_to_i
@@ -825,9 +846,45 @@ class Complex_Test < Test::Unit::TestCase
     end
   end
 
+  def test_finite_p
+    assert_predicate(1+1i, :finite?)
+    assert_predicate(1-1i, :finite?)
+    assert_predicate(-1+1i, :finite?)
+    assert_predicate(-1-1i, :finite?)
+    assert_not_predicate(Float::INFINITY + 1i, :finite?)
+    assert_not_predicate(Complex(1, Float::INFINITY), :finite?)
+    assert_predicate(Complex(Float::MAX, 0.0), :finite?)
+    assert_predicate(Complex(0.0, Float::MAX), :finite?)
+    assert_predicate(Complex(Float::MAX, Float::MAX), :finite?)
+    assert_not_predicate(Complex(Float::NAN, 0), :finite?)
+    assert_not_predicate(Complex(0, Float::NAN), :finite?)
+    assert_not_predicate(Complex(Float::NAN, Float::NAN), :finite?)
+  end
+
+  def test_infinite_p
+    assert_nil((1+1i).infinite?)
+    assert_nil((1-1i).infinite?)
+    assert_nil((-1+1i).infinite?)
+    assert_nil((-1-1i).infinite?)
+    assert_equal(1, (Float::INFINITY + 1i).infinite?)
+    assert_equal(1, (Float::INFINITY - 1i).infinite?)
+    assert_equal(1, (-Float::INFINITY + 1i).infinite?)
+    assert_equal(1, (-Float::INFINITY - 1i).infinite?)
+    assert_equal(1, Complex(1, Float::INFINITY).infinite?)
+    assert_equal(1, Complex(-1, Float::INFINITY).infinite?)
+    assert_equal(1, Complex(1, -Float::INFINITY).infinite?)
+    assert_equal(1, Complex(-1, -Float::INFINITY).infinite?)
+    assert_nil(Complex(Float::MAX, 0.0).infinite?)
+    assert_nil(Complex(0.0, Float::MAX).infinite?)
+    assert_nil(Complex(Float::MAX, Float::MAX).infinite?)
+    assert_nil(Complex(Float::NAN, 0).infinite?)
+    assert_nil(Complex(0, Float::NAN).infinite?)
+    assert_nil(Complex(Float::NAN, Float::NAN).infinite?)
+  end
+
   def test_supp
-    assert_equal(true, 1.real?)
-    assert_equal(true, 1.1.real?)
+    assert_predicate(1, :real?)
+    assert_predicate(1.1, :real?)
 
     assert_equal(1, 1.real)
     assert_equal(0, 1.imag)
@@ -922,4 +979,30 @@ class Complex_Test < Test::Unit::TestCase
   def test_known_bug
   end
 
+  def test_canonicalize_internal
+    obj = Class.new(Numeric) do
+      attr_accessor :real
+      alias real? real
+    end.new
+    obj.real = true
+    c = Complex.rect(obj, 1);
+    obj.real = false
+    c = c.conj
+    assert_equal(obj, c.real)
+    assert_equal(-1, c.imag)
+  end
+
+  def test_canonicalize_polar
+    obj = Class.new(Numeric) do
+      def initialize
+        @x = 2
+      end
+      def real?
+        (@x -= 1) > 0
+      end
+    end.new
+    assert_raise(TypeError) do
+      Complex.polar(1, obj)
+    end
+  end
 end

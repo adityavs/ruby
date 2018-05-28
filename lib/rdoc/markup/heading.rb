@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 ##
 # A heading with a level (1-6) and text
 

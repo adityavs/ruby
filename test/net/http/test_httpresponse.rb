@@ -1,4 +1,5 @@
 # coding: US-ASCII
+# frozen_string_literal: false
 require 'net/http'
 require 'test/unit'
 require 'stringio'
@@ -73,6 +74,32 @@ EOS
     end
 
     assert_equal 'hello', body
+  end
+
+  def test_read_body_block_mod
+    IO.pipe do |r, w|
+      buf = 'x' * 1024
+      buf.freeze
+      n = 1024
+      len = n * buf.size
+      th = Thread.new do
+        w.write("HTTP/1.1 200 OK\r\nContent-Length: #{len}\r\n\r\n")
+        n.times { w.write(buf) }
+        :ok
+      end
+      io = Net::BufferedIO.new(r)
+      res = Net::HTTPResponse.read_new(io)
+      nr = 0
+      res.reading_body io, true do
+        # should be allowed to modify the chunk given to them:
+        res.read_body do |chunk|
+          nr += chunk.size
+          chunk.clear
+        end
+      end
+      assert_equal len, nr
+      assert_equal :ok, th.value
+    end
   end
 
   def test_read_body_content_encoding_deflate
@@ -322,7 +349,7 @@ EOS
     response.uri = uri
 
     assert_equal uri, response.uri
-    refute_same  uri, response.uri
+    assert_not_same  uri, response.uri
   end
 
   def test_ensure_zero_space_does_not_regress
@@ -382,6 +409,22 @@ EOS
     assert_equal('1.1', res.http_version)
     assert_equal('200', res.code)
     assert_equal(nil, res.message)
+  end
+
+  def test_raises_exception_with_missing_reason
+    io = dummy_io(<<EOS)
+HTTP/1.1 404
+Content-Length: 5
+Connection: close
+
+hello
+EOS
+
+    res = Net::HTTPResponse.read_new(io)
+    assert_equal(nil, res.message)
+    assert_raise Net::HTTPServerException do
+      res.error!
+    end
   end
 
 private

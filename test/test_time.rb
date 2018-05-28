@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'time'
 require 'test/unit'
 
@@ -334,6 +336,18 @@ class TestTimeExtension < Test::Unit::TestCase # :nodoc:
     t1 = Time.local(2008,8,1)
     t2 = Time.rfc2822(t1.rfc2822)
     assert_equal(t1.utc?, t2.utc?)
+  end
+
+  def test_parse_now_nil
+    assert_equal(Time.new(2000,1,1,0,0,0,"+11:00"),
+                 Time.parse("2000-01-01T00:00:00+11:00", nil))
+  end
+
+  def test_parse_offset_hour_minute_second
+    t = Time.at(-100000000000).utc
+    assert_equal(t, Time.parse("1200-02-15 BC 14:13:20-00"))
+    assert_equal(t, Time.parse("1200-02-15 BC 14:13:20-00:00"))
+    assert_equal(t, Time.parse("1200-02-15 BC 14:13:20-00:00:00"))
   end
 
   def test_parse_leap_second

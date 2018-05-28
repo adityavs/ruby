@@ -1,5 +1,4 @@
-#
-# -*- frozen_string_literal: true -*-
+# frozen_string_literal: true
 require 'uri'
 require 'stringio'
 require 'time'
@@ -39,6 +38,13 @@ module Kernel
     end
   end
   module_function :open
+end
+
+module URI #:nodoc:
+  # alias for Kernel.open defined in open-uri.
+  def self.open(name, *rest, &block)
+    Kernel.open(name, *rest, &block)
+  end
 end
 
 # OpenURI is an easy-to-use wrapper for Net::HTTP, Net::HTTPS and Net::FTP.
@@ -109,6 +115,7 @@ module OpenURI
     :ssl_verify_mode => nil,
     :ftp_active_mode => false,
     :redirect => true,
+    :encoding => nil,
   }
 
   def OpenURI.check_options(options) # :nodoc:
@@ -141,6 +148,12 @@ module OpenURI
     if /\Arb?(?:\Z|:([^:]+))/ =~ mode
       encoding, = $1,Encoding.find($1) if $1
       mode = nil
+    end
+    if options.has_key? :encoding
+      if !encoding.nil?
+        raise ArgumentError, "encoding specified twice"
+      end
+      encoding = Encoding.find(options[:encoding])
     end
 
     unless mode == nil ||
@@ -250,7 +263,7 @@ module OpenURI
     # (RFC 2109 4.3.1, RFC 2965 3.3, RFC 2616 15.1.3)
     # However this is ad hoc.  It should be extensible/configurable.
     uri1.scheme.downcase == uri2.scheme.downcase ||
-    (/\A(?:http|ftp)\z/i =~ uri1.scheme && /\A(?:http|ftp)\z/i =~ uri2.scheme)
+    (/\A(?:http|ftp)\z/i =~ uri1.scheme && /\A(?:https?|ftp)\z/i =~ uri2.scheme)
   end
 
   def OpenURI.open_http(buf, target, proxy, options) # :nodoc:
@@ -271,6 +284,9 @@ module OpenURI
     if URI::HTTP === target
       # HTTP or HTTPS
       if proxy
+        unless proxy_user && proxy_pass
+          proxy_user, proxy_pass = proxy_uri.userinfo.split(':') if proxy_uri.userinfo
+        end
         if proxy_user && proxy_pass
           klass = Net::HTTP::Proxy(proxy_uri.hostname, proxy_uri.port, proxy_user, proxy_pass)
         else
@@ -286,7 +302,8 @@ module OpenURI
       target_port = proxy_uri.port
       request_uri = target.to_s
       if proxy_user && proxy_pass
-        header["Proxy-Authorization"] = 'Basic ' + ["#{proxy_user}:#{proxy_pass}"].pack('m').delete("\r\n")
+        header["Proxy-Authorization"] =
+                        'Basic ' + ["#{proxy_user}:#{proxy_pass}"].pack('m0')
       end
     end
 
@@ -337,6 +354,7 @@ module OpenURI
           if options[:progress_proc] && Net::HTTPSuccess === resp
             options[:progress_proc].call(buf.size)
           end
+          str.clear
         }
       }
     }
@@ -635,8 +653,8 @@ module OpenURI
     #  is called before actual transfer is started.
     #  It takes one argument, which is expected content length in bytes.
     #
-    #  If two or more transfer is done by HTTP redirection, the procedure
-    #  is called only one for a last transfer.
+    #  If two or more transfers are performed by HTTP redirection, the
+    #  procedure is called only once for the last transfer.
     #
     #  When expected content length is unknown, the procedure is called with
     #  nil.  This happens when the HTTP response has no Content-Length header.
@@ -774,7 +792,7 @@ module URI
       # The access sequence is defined by RFC 1738
       ftp = Net::FTP.new
       ftp.connect(self.hostname, self.port)
-      ftp.passive = true if !options[:ftp_active_mode]
+      ftp.passive = !options[:ftp_active_mode]
       # todo: extract user/passwd from .netrc.
       user = 'anonymous'
       passwd = nil

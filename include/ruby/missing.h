@@ -136,7 +136,7 @@ RUBY_EXTERN double lgamma_r(double, int *);
 RUBY_EXTERN double cbrt(double);
 #endif
 
-#if !defined(HAVE_INFINITY) || !defined(HAVE_NAN)
+#if !defined(INFINITY) || !defined(NAN)
 union bytesequence4_or_float {
   unsigned char bytesequence[4];
   float float_value;
@@ -147,12 +147,18 @@ union bytesequence4_or_float {
 /** @internal */
 RUBY_EXTERN const union bytesequence4_or_float rb_infinity;
 # define INFINITY (rb_infinity.float_value)
+# define USE_RB_INFINITY 1
 #endif
 
 #ifndef NAN
 /** @internal */
 RUBY_EXTERN const union bytesequence4_or_float rb_nan;
 # define NAN (rb_nan.float_value)
+# define USE_RB_NAN 1
+#endif
+
+#ifndef HUGE_VAL
+# define HUGE_VAL ((double)INFINITY)
 #endif
 
 #ifndef isinf
@@ -172,6 +178,17 @@ RUBY_EXTERN int isinf(double);
 # ifndef HAVE_ISNAN
 RUBY_EXTERN int isnan(double);
 # endif
+#endif
+
+#ifndef isfinite
+# ifndef HAVE_ISFINITE
+#   define HAVE_ISFINITE 1
+#   define isfinite(x) finite(x)
+# endif
+#endif
+
+#ifndef HAVE_NAN
+RUBY_EXTERN double nan(const char *);
 #endif
 
 #ifndef HAVE_NEXTAFTER
@@ -207,12 +224,6 @@ RUBY_EXTERN char *strerror(int);
 RUBY_EXTERN char *strstr(const char *, const char *);
 #endif
 
-/*
-#ifndef HAVE_STRTOL
-RUBY_EXTERN long strtol(const char *, char **, int);
-#endif
-*/
-
 #ifndef HAVE_STRLCPY
 RUBY_EXTERN size_t strlcpy(char *, const char*, size_t);
 #endif
@@ -240,6 +251,13 @@ RUBY_EXTERN int ruby_close(int);
 
 #ifndef HAVE_SETPROCTITLE
 RUBY_EXTERN void setproctitle(const char *fmt, ...);
+#endif
+
+#ifndef HAVE_EXPLICIT_BZERO
+RUBY_EXTERN void explicit_bzero(void *b, size_t len);
+# if defined SecureZeroMemory
+#   define explicit_bzero(b, len) SecureZeroMemory(b, len)
+# endif
 #endif
 
 RUBY_SYMBOL_EXPORT_END

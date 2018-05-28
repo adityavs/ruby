@@ -64,6 +64,7 @@ struct strscanner
                             Function Prototypes
    ======================================================================= */
 
+static inline long minl _((const long n, const long x));
 static VALUE infect _((VALUE str, struct strscanner *p));
 static VALUE extract_range _((struct strscanner *p, long beg_i, long end_i));
 static VALUE extract_beg_len _((struct strscanner *p, long beg_i, long len));
@@ -140,12 +141,17 @@ str_new(struct strscanner *p, const char *ptr, long len)
     return str;
 }
 
+static inline long
+minl(const long x, const long y)
+{
+    return (x < y) ? x : y;
+}
+
 static VALUE
 extract_range(struct strscanner *p, long beg_i, long end_i)
 {
     if (beg_i > S_LEN(p)) return Qnil;
-    if (end_i > S_LEN(p))
-        end_i = S_LEN(p);
+    end_i = minl(end_i, S_LEN(p));
     return infect(str_new(p, S_PBEG(p) + beg_i, end_i - beg_i), p);
 }
 
@@ -153,8 +159,7 @@ static VALUE
 extract_beg_len(struct strscanner *p, long beg_i, long len)
 {
     if (beg_i > S_LEN(p)) return Qnil;
-    if (beg_i + len > S_LEN(p))
-        len = S_LEN(p) - beg_i;
+    len = minl(len, S_LEN(p) - beg_i);
     return infect(str_new(p, S_PBEG(p) + beg_i, len), p);
 }
 
@@ -181,11 +186,7 @@ static size_t
 strscan_memsize(const void *ptr)
 {
     const struct strscanner *p = ptr;
-    size_t size = 0;
-    if (p) {
-	size = sizeof(*p) - sizeof(p->regs) + onig_region_memsize(&p->regs);
-    }
-    return size;
+    return sizeof(*p) - sizeof(p->regs) + onig_region_memsize(&p->regs);
 }
 
 static const rb_data_type_t strscanner_type = {
@@ -464,7 +465,7 @@ strscan_do_scan(VALUE self, VALUE regex, int succptr, int getstr, int headonly)
 
     p->regex = regex;
     re = rb_reg_prepare_re(regex, p->str);
-    tmpreg = re != RREGEXP(regex)->ptr;
+    tmpreg = re != RREGEXP_PTR(regex);
     if (!tmpreg) RREGEXP(regex)->usecnt++;
 
     if (headonly) {
@@ -484,8 +485,8 @@ strscan_do_scan(VALUE self, VALUE regex, int succptr, int getstr, int headonly)
             onig_free(re);
         }
         else {
-            onig_free(RREGEXP(regex)->ptr);
-            RREGEXP(regex)->ptr = re;
+            onig_free(RREGEXP_PTR(regex));
+            RREGEXP_PTR(regex) = re;
         }
     }
 
@@ -732,9 +733,7 @@ strscan_getch(VALUE self)
         return Qnil;
 
     len = rb_enc_mbclen(CURPTR(p), S_PEND(p), rb_enc_get(p->str));
-    if (p->curr + len > S_LEN(p)) {
-        len = S_LEN(p) - p->curr;
-    }
+    len = minl(len, S_RESTLEN(p));
     p->prev = p->curr;
     p->curr += len;
     MATCHED(p);
@@ -811,8 +810,7 @@ strscan_peek(VALUE self, VALUE vlen)
     if (EOS_P(p))
         return infect(str_new(p, "", 0), p);
 
-    if (p->curr + len > S_LEN(p))
-        len = S_LEN(p) - p->curr;
+    len = minl(len, S_RESTLEN(p));
     return extract_beg_len(p, p->curr, len);
 }
 
@@ -982,7 +980,7 @@ name_to_backref_number(struct re_registers *regs, VALUE regexp, const char* name
 {
     int num;
 
-    num = onig_name_to_backref_number(RREGEXP(regexp)->ptr,
+    num = onig_name_to_backref_number(RREGEXP_PTR(regexp),
 	(const unsigned char* )name, (const unsigned char* )name_end, regs);
     if (num >= 1) {
 	return num;
@@ -998,7 +996,7 @@ name_to_backref_number(struct re_registers *regs, VALUE regexp, const char* name
 /*
  * call-seq: [](n)
  *
- * Return the n-th subgroup in the most recent match.
+ * Returns the n-th subgroup in the most recent match.
  *
  *   s = StringScanner.new("Fri Dec 12 1975 14:39")
  *   s.scan(/(\w+) (\w+) (\d+) /)       # -> "Fri Dec 12 "
@@ -1036,6 +1034,7 @@ strscan_aref(VALUE self, VALUE idx)
             idx = rb_sym2str(idx);
             /* fall through */
         case T_STRING:
+            if (!p->regex) return Qnil;
             RSTRING_GETMEM(idx, name, i);
             i = name_to_backref_number(&(p->regs), p->regex, name, name + i, rb_enc_get(idx));
             break;
@@ -1054,7 +1053,93 @@ strscan_aref(VALUE self, VALUE idx)
 }
 
 /*
- * Return the <i><b>pre</b>-match</i> (in the regular expression sense) of the last scan.
+ * call-seq: size
+ *
+ * Returns the amount of subgroups in the most recent match.
+ * The full match counts as a subgroup.
+ *
+ *   s = StringScanner.new("Fri Dec 12 1975 14:39")
+ *   s.scan(/(\w+) (\w+) (\d+) /)       # -> "Fri Dec 12 "
+ *   s.size                             # -> 4
+ */
+static VALUE
+strscan_size(VALUE self)
+{
+    struct strscanner *p;
+
+    GET_SCANNER(self, p);
+    if (! MATCHED_P(p))        return Qnil;
+    return INT2FIX(p->regs.num_regs);
+}
+
+/*
+ * call-seq: captures
+ *
+ * Returns the subgroups in the most recent match (not including the full match).
+ * If nothing was priorly matched, it returns nil.
+ *
+ *   s = StringScanner.new("Fri Dec 12 1975 14:39")
+ *   s.scan(/(\w+) (\w+) (\d+) /)       # -> "Fri Dec 12 "
+ *   s.captures                         # -> ["Fri", "Dec", "12"]
+ *   s.scan(/(\w+) (\w+) (\d+) /)       # -> nil
+ *   s.captures                         # -> nil
+ */
+static VALUE
+strscan_captures(VALUE self)
+{
+    struct strscanner *p;
+    int   i, num_regs;
+    VALUE new_ary;
+
+    GET_SCANNER(self, p);
+    if (! MATCHED_P(p))        return Qnil;
+
+    num_regs = p->regs.num_regs;
+    new_ary  = rb_ary_new2(num_regs);
+
+    for (i = 1; i < num_regs; i++) {
+        VALUE str = extract_range(p, p->prev + p->regs.beg[i],
+                                     p->prev + p->regs.end[i]);
+        rb_ary_push(new_ary, str);
+    }
+
+    return new_ary;
+}
+
+/*
+ *  call-seq:
+ *     scanner.values_at( i1, i2, ... iN )   -> an_array
+ *
+ * Returns the subgroups in the most recent match at the given indices.
+ * If nothing was priorly matched, it returns nil.
+ *
+ *   s = StringScanner.new("Fri Dec 12 1975 14:39")
+ *   s.scan(/(\w+) (\w+) (\d+) /)       # -> "Fri Dec 12 "
+ *   s.values_at 0, -1, 5, 2            # -> ["Fri Dec 12 ", "12", nil, "Dec"]
+ *   s.scan(/(\w+) (\w+) (\d+) /)       # -> nil
+ *   s.values_at 0, -1, 5, 2            # -> nil
+ */
+
+static VALUE
+strscan_values_at(int argc, VALUE *argv, VALUE self)
+{
+    struct strscanner *p;
+    long i;
+    VALUE new_ary;
+
+    GET_SCANNER(self, p);
+    if (! MATCHED_P(p))        return Qnil;
+
+    new_ary = rb_ary_new2(argc);
+    for (i = 0; i<argc; i++) {
+        rb_ary_push(new_ary, strscan_aref(self, argv[i]));
+    }
+
+    return new_ary;
+}
+
+/*
+ * Returns the <i><b>pre</b>-match</i> (in the regular expression sense) of the last scan.
  *
  *   s = StringScanner.new('test string')
  *   s.scan(/\w+/)           # -> "test"
@@ -1073,7 +1158,7 @@ strscan_pre_match(VALUE self)
 }
 
 /*
- * Return the <i><b>post</b>-match</i> (in the regular expression sense) of the last scan.
+ * Returns the <i><b>post</b>-match</i> (in the regular expression sense) of the last scan.
  *
  *   s = StringScanner.new('test string')
  *   s.scan(/\w+/)           # -> "test"
@@ -1120,7 +1205,7 @@ strscan_rest_size(VALUE self)
     if (EOS_P(p)) {
         return INT2FIX(0);
     }
-    i = S_LEN(p) - p->curr;
+    i = S_RESTLEN(p);
     return INT2FIX(i);
 }
 
@@ -1206,7 +1291,7 @@ inspect2(struct strscanner *p)
     long len;
 
     if (EOS_P(p)) return rb_str_new2("");
-    len = S_LEN(p) - p->curr;
+    len = S_RESTLEN(p);
     if (len > INSPECT_LENGTH) {
 	str = rb_str_new(CURPTR(p), INSPECT_LENGTH);
 	rb_str_cat2(str, "...");
@@ -1327,6 +1412,7 @@ inspect2(struct strscanner *p)
 void
 Init_strscan(void)
 {
+#undef rb_intern
     ID id_scanerr = rb_intern("ScanError");
     VALUE tmp;
 
@@ -1393,6 +1479,9 @@ Init_strscan(void)
     rb_define_method(StringScanner, "[]",          strscan_aref,        1);
     rb_define_method(StringScanner, "pre_match",   strscan_pre_match,   0);
     rb_define_method(StringScanner, "post_match",  strscan_post_match,  0);
+    rb_define_method(StringScanner, "size",        strscan_size,        0);
+    rb_define_method(StringScanner, "captures",    strscan_captures,    0);
+    rb_define_method(StringScanner, "values_at",   strscan_values_at,  -1);
 
     rb_define_method(StringScanner, "rest",        strscan_rest,        0);
     rb_define_method(StringScanner, "rest_size",   strscan_rest_size,   0);

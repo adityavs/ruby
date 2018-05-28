@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 require 'rubygems/package/tar_test_case'
 require 'rubygems/package'
 
@@ -140,6 +141,27 @@ group\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000
     @tar_header.update_checksum
 
     assert_equal '012467', @tar_header.checksum
+  end
+
+  def test_from_bad_octal
+    test_cases = [
+      "00000006,44\000", # bogus character
+      "00000006789\000", # non-octal digit
+      "+0000001234\000", # positive sign
+      "-0000001000\000", # negative sign
+      "0x000123abc\000", # radix prefix
+    ]
+
+    test_cases.each do |val|
+      header_s = @tar_header.to_s
+      # overwrite the size field
+      header_s[124, 12] = val
+      io = TempIO.new header_s
+      assert_raises ArgumentError do
+        Gem::Package::TarHeader.from io
+      end
+      io.close! if io.respond_to? :close!
+    end
   end
 
 end

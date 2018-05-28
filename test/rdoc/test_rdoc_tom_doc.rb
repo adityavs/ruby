@@ -1,4 +1,5 @@
-require 'rdoc/test_case'
+# frozen_string_literal: true
+require 'minitest_helper'
 
 class TestRDocTomDoc < RDoc::TestCase
 
@@ -130,7 +131,7 @@ here - something
 
   def test_parse_multiline_paragraph
     text = "Public: Do some stuff\n"
-    text << "On a new line\n"
+    text += "On a new line\n"
 
     expected =
       doc(
@@ -352,7 +353,7 @@ Signature
 
   def test_tokenize_multiline_paragraph
     text = "Public: Do some stuff\n"
-    text << "On a new line\n"
+    text += "On a new line\n"
 
     @td.tokenize text
 

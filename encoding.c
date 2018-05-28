@@ -9,13 +9,14 @@
 
 **********************************************************************/
 
+#include "ruby/encoding.h"
 #include "internal.h"
 #include "encindex.h"
 #include "regenc.h"
 #include <ctype.h>
 #include "ruby/util.h"
 
-#include <assert.h>
+#include "ruby_assert.h"
 #ifndef ENC_DEBUG
 #define ENC_DEBUG 0
 #endif
@@ -85,6 +86,12 @@ static const rb_data_type_t encoding_data_type = {
 
 #define is_data_encoding(obj) (RTYPEDDATA_P(obj) && RTYPEDDATA_TYPE(obj) == &encoding_data_type)
 #define is_obj_encoding(obj) (RB_TYPE_P((obj), T_DATA) && is_data_encoding(obj))
+
+int
+rb_data_is_encoding(VALUE obj)
+{
+    return is_data_encoding(obj);
+}
 
 static VALUE
 enc_new(rb_encoding *encoding)
@@ -654,7 +661,7 @@ load_encoding(const char *name)
 	++s;
     }
     FL_UNSET(enclib, FL_TAINT);
-    OBJ_FREEZE(enclib);
+    enclib = rb_fstring(enclib);
     ruby_verbose = Qfalse;
     ruby_debug = Qfalse;
     errinfo = rb_errinfo();
@@ -716,6 +723,17 @@ rb_enc_find_index(const char *name)
 	}
     }
     return i;
+}
+
+int
+rb_enc_find_index2(const char *name, long len)
+{
+    char buf[ENCODING_NAMELEN_MAX+1];
+
+    if (len > ENCODING_NAMELEN_MAX) return -1;
+    memcpy(buf, name, len);
+    buf[len] = '\0';
+    return rb_enc_find_index(buf);
 }
 
 rb_encoding *
@@ -837,8 +855,8 @@ rb_enc_associate_index(VALUE obj, int idx)
     }
     termlen = rb_enc_mbminlen(enc);
     oldtermlen = rb_enc_mbminlen(rb_enc_from_index(oldidx));
-    if (oldtermlen < termlen && RB_TYPE_P(obj, T_STRING)) {
-	rb_str_fill_terminator(obj, termlen);
+    if (oldtermlen != termlen && RB_TYPE_P(obj, T_STRING)) {
+	rb_str_change_terminator_length(obj, oldtermlen, termlen);
     }
     enc_set_index(obj, idx);
     return obj;
@@ -1025,7 +1043,8 @@ rb_enc_precise_mbclen(const char *p, const char *e, rb_encoding *enc)
 int
 rb_enc_ascget(const char *p, const char *e, int *len, rb_encoding *enc)
 {
-    unsigned int c, l;
+    unsigned int c;
+    int l;
     if (e <= p)
         return -1;
     if (rb_enc_asciicompat(enc)) {
@@ -1134,7 +1153,7 @@ enc_inspect(VALUE self)
 static VALUE
 enc_name(VALUE self)
 {
-    return rb_usascii_str_new2(rb_enc_name((rb_encoding*)DATA_PTR(self)));
+    return rb_fstring_cstr(rb_enc_name((rb_encoding*)DATA_PTR(self)));
 }
 
 static int
@@ -1143,8 +1162,7 @@ enc_names_i(st_data_t name, st_data_t idx, st_data_t args)
     VALUE *arg = (VALUE *)args;
 
     if ((int)idx == (int)arg[0]) {
-	VALUE str = rb_usascii_str_new2((char *)name);
-	OBJ_FREEZE(str);
+	VALUE str = rb_fstring_cstr((char *)name);
 	rb_ary_push(arg[1], str);
     }
     return ST_CONTINUE;
@@ -1266,15 +1284,30 @@ enc_compatible_p(VALUE klass, VALUE str1, VALUE str2)
 
 /* :nodoc: */
 static VALUE
+enc_s_alloc(VALUE klass)
+{
+    rb_undefined_alloc(klass);
+    return Qnil;
+}
+
+/* :nodoc: */
+static VALUE
 enc_dump(int argc, VALUE *argv, VALUE self)
 {
-    rb_scan_args(argc, argv, "01", 0);
+    rb_check_arity(argc, 0, 1);
     return enc_name(self);
 }
 
 /* :nodoc: */
 static VALUE
 enc_load(VALUE klass, VALUE str)
+{
+    return str;
+}
+
+/* :nodoc: */
+static VALUE
+enc_m_loader(VALUE klass, VALUE str)
 {
     return enc_find(klass, str);
 }
@@ -1618,8 +1651,7 @@ static int
 rb_enc_name_list_i(st_data_t name, st_data_t idx, st_data_t arg)
 {
     VALUE ary = (VALUE)arg;
-    VALUE str = rb_usascii_str_new2((char *)name);
-    OBJ_FREEZE(str);
+    VALUE str = rb_fstring_cstr((char *)name);
     rb_ary_push(ary, str);
     return ST_CONTINUE;
 }
@@ -1661,12 +1693,10 @@ rb_enc_aliases_enc_i(st_data_t name, st_data_t orig, st_data_t arg)
 	if (STRCASECMP((char*)name, rb_enc_name(enc)) == 0) {
 	    return ST_CONTINUE;
 	}
-	str = rb_usascii_str_new2(rb_enc_name(enc));
-	OBJ_FREEZE(str);
+	str = rb_fstring_cstr(rb_enc_name(enc));
 	rb_ary_store(ary, idx, str);
     }
-    key = rb_usascii_str_new2((char *)name);
-    OBJ_FREEZE(key);
+    key = rb_fstring_cstr((char *)name);
     rb_hash_aset(aliases, key, str);
     return ST_CONTINUE;
 }
@@ -1699,7 +1729,7 @@ rb_enc_aliases(VALUE klass)
  * optionally, aliases:
  *
  *   Encoding::ISO_8859_1.name
- *   #=> #<Encoding:ISO-8859-1>
+ *   #=> "ISO-8859-1"
  *
  *   Encoding::ISO_8859_1.names
  *   #=> ["ISO-8859-1", "ISO8859-1"]
@@ -1902,7 +1932,7 @@ Init_Encoding(void)
     int i;
 
     rb_cEncoding = rb_define_class("Encoding", rb_cObject);
-    rb_undef_alloc_func(rb_cEncoding);
+    rb_define_alloc_func(rb_cEncoding, enc_s_alloc);
     rb_undef_method(CLASS_OF(rb_cEncoding), "new");
     rb_define_method(rb_cEncoding, "to_s", enc_name, 0);
     rb_define_method(rb_cEncoding, "inspect", enc_inspect, 0);
@@ -1934,37 +1964,11 @@ Init_Encoding(void)
     for (i = 0; i < enc_table.count; ++i) {
 	rb_ary_push(list, enc_new(enc_table.list[i].enc));
     }
+
+    rb_marshal_define_compat(rb_cEncoding, Qnil, NULL, enc_m_loader);
 }
 
 /* locale insensitive ctype functions */
-
-#define ctype_test(c, ctype) \
-    (rb_isascii(c) && ONIGENC_IS_ASCII_CODE_CTYPE((c), (ctype)))
-
-int rb_isalnum(int c) { return ctype_test(c, ONIGENC_CTYPE_ALNUM); }
-int rb_isalpha(int c) { return ctype_test(c, ONIGENC_CTYPE_ALPHA); }
-int rb_isblank(int c) { return ctype_test(c, ONIGENC_CTYPE_BLANK); }
-int rb_iscntrl(int c) { return ctype_test(c, ONIGENC_CTYPE_CNTRL); }
-int rb_isdigit(int c) { return ctype_test(c, ONIGENC_CTYPE_DIGIT); }
-int rb_isgraph(int c) { return ctype_test(c, ONIGENC_CTYPE_GRAPH); }
-int rb_islower(int c) { return ctype_test(c, ONIGENC_CTYPE_LOWER); }
-int rb_isprint(int c) { return ctype_test(c, ONIGENC_CTYPE_PRINT); }
-int rb_ispunct(int c) { return ctype_test(c, ONIGENC_CTYPE_PUNCT); }
-int rb_isspace(int c) { return ctype_test(c, ONIGENC_CTYPE_SPACE); }
-int rb_isupper(int c) { return ctype_test(c, ONIGENC_CTYPE_UPPER); }
-int rb_isxdigit(int c) { return ctype_test(c, ONIGENC_CTYPE_XDIGIT); }
-
-int
-rb_tolower(int c)
-{
-    return rb_isascii(c) ? ONIGENC_ASCII_CODE_TO_LOWER_CASE(c) : c;
-}
-
-int
-rb_toupper(int c)
-{
-    return rb_isascii(c) ? ONIGENC_ASCII_CODE_TO_UPPER_CASE(c) : c;
-}
 
 void
 rb_enc_foreach_name(int (*func)(st_data_t name, st_data_t idx, st_data_t arg), st_data_t arg)

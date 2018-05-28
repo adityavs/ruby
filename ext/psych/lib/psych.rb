@@ -1,9 +1,15 @@
+# frozen_string_literal: true
+require 'psych/versions'
 case RUBY_ENGINE
 when 'jruby'
   require 'psych_jars'
   org.jruby.ext.psych.PsychLibrary.new.load(JRuby.runtime, false)
 else
-  require 'psych.so'
+  begin
+    require "#{RUBY_VERSION[/\d+\.\d+/]}/psych.so"
+  rescue LoadError
+    require 'psych.so'
+  end
 end
 require 'psych/nodes'
 require 'psych/streaming'
@@ -15,7 +21,6 @@ require 'psych/omap'
 require 'psych/set'
 require 'psych/coder'
 require 'psych/core_ext'
-require 'psych/deprecated'
 require 'psych/stream'
 require 'psych/json/tree_builder'
 require 'psych/json/stream'
@@ -193,12 +198,13 @@ require 'psych/class_loader'
 #
 # ==== Receiving an events stream
 #
-#   parser = Psych::Parser.new(Psych::Handlers::Recorder.new)
+#   recorder = Psych::Handlers::Recorder.new
+#   parser = Psych::Parser.new(recorder)
 #
 #   parser.parse("---\n - a\n - b")
-#   parser.events # => [list of [event, args] lists]
-#                 # event is one of: Psych::Handler::EVENTS
-#                 # args are the arguments passed to the event
+#   recorder.events # => [list of [event, args] lists]
+#                   # event is one of: Psych::Handler::EVENTS
+#                   # args are the arguments passed to the event
 #
 # === Emitting
 #
@@ -222,11 +228,10 @@ require 'psych/class_loader'
 #   # => "a"
 
 module Psych
-  # The version is Psych you're using
-  VERSION         = '2.0.15'
-
   # The version of libyaml Psych is using
   LIBYAML_VERSION = Psych.libyaml_version.join '.'
+
+  FALLBACK        = Struct.new :to_ruby # :nodoc:
 
   ###
   # Load +yaml+ in to a Ruby data structure.  If multiple documents are
@@ -247,9 +252,18 @@ module Psych
   #     ex.file    # => 'file.txt'
   #     ex.message # => "(file.txt): found character that cannot start any token"
   #   end
-  def self.load yaml, filename = nil
-    result = parse(yaml, filename)
-    result ? result.to_ruby : result
+  #
+  # When the optional +symbolize_names+ keyword argument is set to a
+  # true value, returns symbols for keys in Hash objects (default: strings).
+  #
+  #   Psych.load("---\n foo: bar")                         # => {"foo"=>"bar"}
+  #   Psych.load("---\n foo: bar", symbolize_names: true)  # => {:foo=>"bar"}
+  #
+  def self.load yaml, filename = nil, fallback: false, symbolize_names: false
+    result = parse(yaml, filename, fallback: fallback)
+    result = result.to_ruby if result
+    symbolize_names!(result) if symbolize_names
+    result
   end
 
   ###
@@ -286,7 +300,17 @@ module Psych
   #
   # A Psych::BadAlias exception will be raised if the yaml contains aliases
   # but the +aliases+ parameter is set to false.
-  def self.safe_load yaml, whitelist_classes = [], whitelist_symbols = [], aliases = false, filename = nil
+  #
+  # +filename+ will be used in the exception message if any exception is raised
+  # while parsing.
+  #
+  # When the optional +symbolize_names+ keyword argument is set to a
+  # true value, returns symbols for keys in Hash objects (default: strings).
+  #
+  #   Psych.safe_load("---\n foo: bar")                         # => {"foo"=>"bar"}
+  #   Psych.safe_load("---\n foo: bar", symbolize_names: true)  # => {:foo=>"bar"}
+  #
+  def self.safe_load yaml, whitelist_classes = [], whitelist_symbols = [], aliases = false, filename = nil, symbolize_names: false
     result = parse(yaml, filename)
     return unless result
 
@@ -298,7 +322,9 @@ module Psych
     else
       visitor = Visitors::NoAliasRuby.new scanner, class_loader
     end
-    visitor.accept result
+    result = visitor.accept result
+    symbolize_names!(result) if symbolize_names
+    result
   end
 
   ###
@@ -320,11 +346,11 @@ module Psych
   #   end
   #
   # See Psych::Nodes for more information about YAML AST.
-  def self.parse yaml, filename = nil
+  def self.parse yaml, filename = nil, fallback: false
     parse_stream(yaml, filename) do |node|
       return node
     end
-    false
+    fallback
   end
 
   ###
@@ -392,6 +418,24 @@ module Psych
   # to control the output format.  If an IO object is passed in, the YAML will
   # be dumped to that IO object.
   #
+  # Currently supported options are:
+  #
+  # [<tt>:indentation</tt>]   Number of space characters used to indent.
+  #                           Acceptable value should be in <tt>0..9</tt> range,
+  #                           otherwise option is ignored.
+  #
+  #                           Default: <tt>2</tt>.
+  # [<tt>:line_width</tt>]    Max character to wrap line at.
+  #
+  #                           Default: <tt>0</tt> (meaning "wrap at 81").
+  # [<tt>:canonical</tt>]     Write "canonical" YAML form (very verbose, yet
+  #                           strictly formal).
+  #
+  #                           Default: <tt>false</tt>.
+  # [<tt>:header</tt>]        Write <tt>%YAML [version]</tt> at the beginning of document.
+  #
+  #                           Default: <tt>false</tt>.
+  #
   # Example:
   #
   #   # Dump an array, get back a YAML string
@@ -401,10 +445,10 @@ module Psych
   #   Psych.dump(['a', 'b'], StringIO.new)  # => #<StringIO:0x000001009d0890>
   #
   #   # Dump an array with indentation set
-  #   Psych.dump(['a', ['b']], :indentation => 3) # => "---\n- a\n-  - b\n"
+  #   Psych.dump(['a', ['b']], indentation: 3) # => "---\n- a\n-  - b\n"
   #
   #   # Dump an array to an IO with indentation set
-  #   Psych.dump(['a', ['b']], StringIO.new, :indentation => 3)
+  #   Psych.dump(['a', ['b']], StringIO.new, indentation: 3)
   def self.dump o, io = nil, options = {}
     if Hash === io
       options = io
@@ -465,9 +509,12 @@ module Psych
 
   ###
   # Load the document contained in +filename+.  Returns the yaml contained in
-  # +filename+ as a Ruby object
-  def self.load_file filename
-    File.open(filename, 'r:bom|utf-8') { |f| self.load f, filename }
+  # +filename+ as a Ruby object, or if the file is empty, it returns
+  # the specified +fallback+ return value, which defaults to +false+.
+  def self.load_file filename, fallback: false
+    File.open(filename, 'r:bom|utf-8') { |f|
+      self.load f, filename, fallback: FALLBACK.new(fallback)
+    }
   end
 
   # :stopdoc:
@@ -494,6 +541,19 @@ module Psych
     @load_tags[tag] = klass.name
     @dump_tags[klass] = tag
   end
+
+  def self.symbolize_names!(result)
+    case result
+    when Hash
+      result.keys.each do |key|
+        result[key.to_sym] = symbolize_names!(result.delete(key))
+      end
+    when Array
+      result.map! { |r| symbolize_names!(r) }
+    end
+    result
+  end
+  private_class_method :symbolize_names!
 
   class << self
     attr_accessor :load_tags

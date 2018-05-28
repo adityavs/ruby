@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 ##
 # Outputs RDoc markup as RDoc markup! (mostly)
 

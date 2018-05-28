@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 require 'tempfile'
 require 'rubygems'
 require 'rubygems/remote_fetcher'
@@ -63,7 +64,7 @@ class Gem::FakeFetcher
       data.call
     else
       if path.to_s =~ /gz$/ and not data.nil? and not data.empty? then
-        data = Gem.gunzip data
+        data = Gem::Util.gunzip data
       end
 
       data
@@ -345,7 +346,7 @@ class Gem::TestCase::SpecFetcherSetup
   end
 
   def write_spec spec # :nodoc:
-    open spec.spec_file, 'w' do |io|
+    File.open spec.spec_file, 'w' do |io|
       io.write spec.to_ruby_for_cache
     end
   end

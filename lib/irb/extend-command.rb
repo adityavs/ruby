@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 #
 #   irb/extend-command.rb - irb extend command
 #   	$Release Version: 0.9.6$
@@ -213,7 +214,6 @@ module IRB # :nodoc:
     @EXTEND_COMMANDS = [
       [:eval_history=, "irb/ext/history.rb"],
       [:use_tracer=, "irb/ext/tracer.rb"],
-      [:math_mode=, "irb/ext/math-mode.rb"],
       [:use_loader=, "irb/ext/use-loader.rb"],
       [:save_history=, "irb/ext/save-history.rb"],
     ]
@@ -222,7 +222,6 @@ module IRB # :nodoc:
     #
     # Context#eval_history=::   +irb/ext/history.rb+
     # Context#use_tracer=::     +irb/ext/tracer.rb+
-    # Context#math_mode=::      +irb/ext/math-mode.rb+
     # Context#use_loader=::     +irb/ext/use-loader.rb+
     # Context#save_history=::   +irb/ext/save-history.rb+
     def self.install_extend_commands
@@ -305,4 +304,3 @@ module IRB # :nodoc:
     end
   end
 end
-

@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 require 'rbconfig'
 
 src_testdir = File.dirname(File.realpath(__FILE__))
@@ -21,24 +22,11 @@ ENV["GEM_SKIP"] = ENV["GEM_HOME"] = ENV["GEM_PATH"] = "".freeze
 
 require_relative 'lib/profile_test_all' if ENV.has_key?('RUBY_TEST_ALL_PROFILE')
 require_relative 'lib/tracepointchecker'
-
-module Test::Unit
-  module ZombieHunter
-    def after_teardown
-      super
-      assert_empty(Process.waitall)
-    end
-  end
-
-  class TestCase
-    include ZombieHunter
-  end
-end
+require_relative 'lib/zombie_hunter'
+require_relative 'lib/iseq_loader_checker'
 
 if ENV['COVERAGE']
-  $LOAD_PATH.unshift "#{src_testdir}/../coverage/simplecov/lib"
-  require 'simplecov'
-  SimpleCov.start
+  require_relative "../tool/test-coverage.rb"
 end
 
 begin

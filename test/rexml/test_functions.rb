@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 require "test/unit/testcase"
 
 require "rexml/document"
@@ -219,6 +220,19 @@ module REXMLTests
       predicate = "string(.)=normalize_space('\nCOMMENT    \n A \n\n ')"
       m = REXML::XPath.match(doc, "//comment()[#{predicate}]")
       assert_equal( [REXML::Comment.new("COMMENT A")], m )
+    end
+
+    def test_unregistered_method
+      doc = Document.new("<root/>")
+      assert_nil(XPath::first(doc.root, "to_s()"))
+    end
+
+    def test_nonexistent_function
+      doc = Document.new("<root><nonexistent/></root>")
+      # TODO: Maybe, this is not XPath spec behavior.
+      # This behavior must be reconsidered.
+      assert_equal(doc.root.elements[1],
+                   XPath::first(doc.root, "nonexistent()"))
     end
   end
 end

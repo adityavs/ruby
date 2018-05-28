@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 $extmk = true
 
 require 'test/unit'
@@ -48,8 +49,12 @@ module TestMkmf::Base
     def filter(&block)
       @filter = block
     end
-    def write(s)
-      @buffer << s if @out
+    def write(*s)
+      if @out
+        @buffer.concat(*s)
+      elsif @origin
+        @origin.write(*s)
+      end
     end
   end
 

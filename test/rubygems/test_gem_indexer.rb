@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 require 'rubygems/test_case'
 require 'rubygems/indexer'
 
@@ -38,8 +39,7 @@ class TestGemIndexer < Gem::TestCase
 
   def test_initialize
     assert_equal @tempdir, @indexer.dest_directory
-    assert_equal File.join(Dir.tmpdir, "gem_generate_index_#{$$}"),
-                 @indexer.directory
+    assert_match %r{#{Dir.mktmpdir('gem_generate_index').match(/.*-/)}}, @indexer.directory
 
     indexer = Gem::Indexer.new @tempdir
     assert indexer.build_modern

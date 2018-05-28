@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 require_relative 'helper'
 
 require 'stringio'
@@ -8,7 +9,17 @@ class TestPsych < Psych::TestCase
     Psych.domain_types.clear
   end
 
-  def test_line_width
+  def test_line_width_invalid
+    assert_raises(ArgumentError) { Psych.dump('x', { :line_width => -2 }) }
+  end
+
+  def test_line_width_no_limit
+    data = { 'a' => 'a b' * 50}
+    expected = "---\na: #{'a b' * 50}\n"
+    assert_equal(expected, Psych.dump(data, { :line_width => -1 }))
+  end
+
+  def test_line_width_limit
     yml = Psych.dump('123456 7', { :line_width => 5 })
     assert_match(/^\s*7/, yml)
   end
@@ -73,7 +84,7 @@ class TestPsych < Psych::TestCase
 
   def test_dump_io
     hash = {'hello' => 'TGIF!'}
-    stringio = StringIO.new ''
+    stringio = StringIO.new ''.dup
     assert_equal stringio, Psych.dump(hash, stringio)
     assert_equal Psych.dump(hash), stringio.string
   end
@@ -87,8 +98,8 @@ class TestPsych < Psych::TestCase
     assert_equal Psych.libyaml_version.join('.'), Psych::LIBYAML_VERSION
   end
 
-  def test_load_documents
-    docs = Psych.load_documents("--- foo\n...\n--- bar\n...")
+  def test_load_stream
+    docs = Psych.load_stream("--- foo\n...\n--- bar\n...")
     assert_equal %w{ foo bar }, docs
   end
 
@@ -133,6 +144,49 @@ class TestPsych < Psych::TestCase
     }
   end
 
+  def test_load_file_default_return_value
+    Tempfile.create(['empty', 'yml']) {|t|
+      assert_equal false, Psych.load_file(t.path)
+    }
+  end
+
+  def test_load_file_with_fallback
+    Tempfile.create(['empty', 'yml']) {|t|
+      assert_equal 42, Psych.load_file(t.path, fallback: 42)
+    }
+  end
+
+  def test_load_file_with_fallback_nil_or_false
+    Tempfile.create(['empty', 'yml']) {|t|
+      assert_nil Psych.load_file(t.path, fallback: nil)
+      assert_equal false, Psych.load_file(t.path, fallback: false)
+    }
+  end
+
+  def test_load_file_with_fallback_hash
+    Tempfile.create(['empty', 'yml']) {|t|
+      assert_equal Hash.new, Psych.load_file(t.path, fallback: Hash.new)
+    }
+  end
+
+  def test_load_file_with_fallback_for_nil
+    Tempfile.create(['nil', 'yml']) {|t|
+      t.binmode
+      t.write('--- null')
+      t.close
+      assert_nil Psych.load_file(t.path, fallback: 42)
+    }
+  end
+
+  def test_load_file_with_fallback_for_false
+    Tempfile.create(['false', 'yml']) {|t|
+      t.binmode
+      t.write('--- false')
+      t.close
+      assert_equal false, Psych.load_file(t.path, fallback: 42)
+    }
+  end
+
   def test_parse_file
     Tempfile.create(['yikes', 'yml']) {|t|
       t.binmode
@@ -164,5 +218,23 @@ class TestPsych < Psych::TestCase
       ["tag:yaml.org,2002:foo", "bar"],
       ["tag:example.com,2002:foo", "bar"]
     ], types
+  end
+
+  def test_symbolize_names
+    yaml = <<-eoyml
+foo:
+  bar: baz
+hoge:
+  - fuga: piyo
+    eoyml
+
+    result = Psych.load(yaml)
+    assert_equal result, { "foo" => { "bar" => "baz"}, "hoge" => [{ "fuga" => "piyo" }] }
+
+    result = Psych.load(yaml, symbolize_names: true)
+    assert_equal result, { foo: { bar: "baz" }, hoge: [{ fuga: "piyo" }] }
+
+    result = Psych.safe_load(yaml, symbolize_names: true)
+    assert_equal result, { foo: { bar: "baz" }, hoge: [{ fuga: "piyo" }] }
   end
 end

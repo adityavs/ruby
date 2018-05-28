@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'date'
 
 # = time.rb
@@ -132,9 +134,9 @@ class Time
     def zone_offset(zone, year=self.now.year)
       off = nil
       zone = zone.upcase
-      if /\A([+-])(\d\d):?(\d\d)\z/ =~ zone
-        off = ($1 == '-' ? -1 : 1) * ($2.to_i * 60 + $3.to_i) * 60
-      elsif /\A[+-]\d\d\z/ =~ zone
+      if /\A([+-])(\d\d)(:?)(\d\d)(?:\3(\d\d))?\z/ =~ zone
+        off = ($1 == '-' ? -1 : 1) * (($2.to_i * 60 + $4.to_i) * 60 + $5.to_i)
+      elsif zone.match?(/\A[+-]\d\d\z/)
         off = zone.to_i * 3600
       elsif ZoneOffset.include?(zone)
         off = ZoneOffset[zone] * 3600
@@ -166,11 +168,7 @@ class Time
       #   They are not appropriate for specific time zone such as
       #   Europe/London because time zone neutral,
       #   So -00:00 and -0000 are treated as UTC.
-      if /\A(?:-00:00|-0000|-00|UTC|Z|UT)\z/i =~ zone
-        true
-      else
-        false
-      end
+      zone.match?(/\A(?:-00:00|-0000|-00|UTC|Z|UT)\z/i)
     end
     private :zone_utc?
 
@@ -252,14 +250,18 @@ class Time
         raise ArgumentError, "no time information in #{date.inspect}"
       end
 
-      off_year = year || now.year
       off = nil
-      off = zone_offset(zone, off_year) if zone
+      if year || now
+        off_year = year || now.year
+        off = zone_offset(zone, off_year) if zone
+      end
 
-      if off
-        now = now.getlocal(off) if now.utc_offset != off
-      else
-        now = now.getlocal
+      if now
+        if off
+          now = now.getlocal(off) if now.utc_offset != off
+        else
+          now = now.getlocal
+        end
       end
 
       usec = nil
@@ -515,14 +517,14 @@ class Time
     # You must require 'time' to use this method.
     #
     def httpdate(date)
-      if /\A\s*
+      if date.match?(/\A\s*
           (?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),\x20
           (\d{2})\x20
           (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\x20
           (\d{4})\x20
           (\d{2}):(\d{2}):(\d{2})\x20
           GMT
-          \s*\z/ix =~ date
+          \s*\z/ix)
         self.rfc2822(date).utc
       elsif /\A\s*
              (?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),\x20
@@ -614,7 +616,7 @@ class Time
     sprintf('%s, %02d %s %0*d %02d:%02d:%02d ',
       RFC2822_DAY_NAME[wday],
       day, RFC2822_MONTH_NAME[mon-1], year < 0 ? 5 : 4, year,
-      hour, min, sec) +
+      hour, min, sec) <<
     if utc?
       '-0000'
     else

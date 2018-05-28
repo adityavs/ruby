@@ -9,14 +9,15 @@ enum rb_id_table_iterator_result {
     ID_TABLE_CONTINUE = ST_CONTINUE,
     ID_TABLE_STOP     = ST_STOP,
     ID_TABLE_DELETE   = ST_DELETE,
+    ID_TABLE_ITERATOR_RESULT_END
 };
 
 struct rb_id_table *rb_id_table_create(size_t size);
 void rb_id_table_free(struct rb_id_table *tbl);
 void rb_id_table_clear(struct rb_id_table *tbl);
 
-size_t rb_id_table_size(struct rb_id_table *tbl);
-size_t rb_id_table_memsize(struct rb_id_table *tbl);
+size_t rb_id_table_size(const struct rb_id_table *tbl);
+size_t rb_id_table_memsize(const struct rb_id_table *tbl);
 
 int rb_id_table_insert(struct rb_id_table *tbl, ID id, VALUE val);
 int rb_id_table_lookup(struct rb_id_table *tbl, ID id, VALUE *valp);

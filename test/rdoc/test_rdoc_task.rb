@@ -1,4 +1,5 @@
-require 'rdoc/test_case'
+# frozen_string_literal: true
+require 'minitest_helper'
 begin
   require 'rake'
 rescue LoadError

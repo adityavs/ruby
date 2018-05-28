@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 require 'test/unit'
 
 class TestEnv < Test::Unit::TestCase
@@ -45,6 +46,7 @@ class TestEnv < Test::Unit::TestCase
     end
     ENV['TEST'] = 'bar'
     assert_equal('bar', ENV['TEST'])
+    assert_predicate(ENV['TEST'], :tainted?)
     if IGNORE_CASE
       assert_equal('bar', ENV['test'])
     else
@@ -52,7 +54,7 @@ class TestEnv < Test::Unit::TestCase
     end
 
     assert_raise(TypeError) {
-      tmp = ENV[1]
+      ENV[1]
     }
     assert_raise(TypeError) {
       ENV[1] = 'foo'
@@ -111,6 +113,7 @@ class TestEnv < Test::Unit::TestCase
     assert_invalid_env {|v| ENV[v]}
     ENV[PATH_ENV] = ""
     assert_equal("", ENV[PATH_ENV])
+    assert_predicate(ENV[PATH_ENV], :tainted?)
     assert_nil(ENV[""])
   end
 
@@ -119,16 +122,21 @@ class TestEnv < Test::Unit::TestCase
     assert_equal("foo", ENV.fetch("test"))
     ENV.delete("test")
     feature8649 = '[ruby-core:56062] [Feature #8649]'
-    assert_raise_with_message(KeyError, 'key not found: "test"', feature8649) do
+    e = assert_raise_with_message(KeyError, 'key not found: "test"', feature8649) do
       ENV.fetch("test")
     end
+    assert_same(ENV, e.receiver)
+    assert_equal("test", e.key)
     assert_equal("foo", ENV.fetch("test", "foo"))
     assert_equal("bar", ENV.fetch("test") { "bar" })
-    assert_equal("bar", ENV.fetch("test", "foo") { "bar" })
+    EnvUtil.suppress_warning do
+      assert_equal("bar", ENV.fetch("test", "foo") { "bar" })
+    end
     assert_invalid_env {|v| ENV.fetch(v)}
     assert_nothing_raised { ENV.fetch(PATH_ENV, "foo") }
     ENV[PATH_ENV] = ""
     assert_equal("", ENV.fetch(PATH_ENV))
+    assert_predicate(ENV.fetch(PATH_ENV), :tainted?)
   end
 
   def test_aset
@@ -187,6 +195,10 @@ class TestEnv < Test::Unit::TestCase
     ENV.each_pair {|k, v| h2[k] = v }
     assert_equal(h1, h2)
 
+    assert_nil(ENV.reject! {|k, v| IGNORE_CASE ? k.upcase == "TEST" : k == "test" })
+  end
+
+  def test_delete_if
     h1 = {}
     ENV.each_pair {|k, v| h1[k] = v }
     ENV["test"] = "foo"
@@ -194,6 +206,8 @@ class TestEnv < Test::Unit::TestCase
     h2 = {}
     ENV.each_pair {|k, v| h2[k] = v }
     assert_equal(h1, h2)
+
+    assert_equal(ENV, ENV.delete_if {|k, v| IGNORE_CASE ? k.upcase == "TEST" : k == "test" })
   end
 
   def test_select_bang
@@ -205,6 +219,22 @@ class TestEnv < Test::Unit::TestCase
     ENV.each_pair {|k, v| h2[k] = v }
     assert_equal(h1, h2)
 
+    assert_nil(ENV.select! {|k, v| IGNORE_CASE ? k.upcase != "TEST" : k != "test" })
+  end
+
+  def test_filter_bang
+    h1 = {}
+    ENV.each_pair {|k, v| h1[k] = v }
+    ENV["test"] = "foo"
+    ENV.filter! {|k, v| IGNORE_CASE ? k.upcase != "TEST" : k != "test" }
+    h2 = {}
+    ENV.each_pair {|k, v| h2[k] = v }
+    assert_equal(h1, h2)
+
+    assert_nil(ENV.filter! {|k, v| IGNORE_CASE ? k.upcase != "TEST" : k != "test" })
+  end
+
+  def test_keep_if
     h1 = {}
     ENV.each_pair {|k, v| h1[k] = v }
     ENV["test"] = "foo"
@@ -212,6 +242,8 @@ class TestEnv < Test::Unit::TestCase
     h2 = {}
     ENV.each_pair {|k, v| h2[k] = v }
     assert_equal(h1, h2)
+
+    assert_equal(ENV, ENV.keep_if {|k, v| IGNORE_CASE ? k.upcase != "TEST" : k != "test" })
   end
 
   def test_values_at
@@ -232,6 +264,32 @@ class TestEnv < Test::Unit::TestCase
       assert_equal("test", k)
       assert_equal("foo", v)
     end
+  end
+
+  def test_filter
+    ENV["test"] = "foo"
+    h = ENV.filter {|k| IGNORE_CASE ? k.upcase == "TEST" : k == "test" }
+    assert_equal(1, h.size)
+    k = h.keys.first
+    v = h.values.first
+    if IGNORE_CASE
+      assert_equal("TEST", k.upcase)
+      assert_equal("FOO", v.upcase)
+    else
+      assert_equal("test", k)
+      assert_equal("foo", v)
+    end
+  end
+
+  def test_slice
+    ENV.clear
+    ENV["foo"] = "bar"
+    ENV["baz"] = "qux"
+    ENV["bar"] = "rab"
+    assert_equal({}, ENV.slice())
+    assert_equal({}, ENV.slice(""))
+    assert_equal({}, ENV.slice("unknown"))
+    assert_equal({"foo"=>"bar", "baz"=>"qux"}, ENV.slice("foo", "baz"))
   end
 
   def test_clear
@@ -305,7 +363,9 @@ class TestEnv < Test::Unit::TestCase
       assert_equal("test", k)
       assert_equal("foo", v)
     end
-    assert_invalid_env {|v| ENV.assoc(v)}
+    assert_invalid_env {|var| ENV.assoc(var)}
+    assert_predicate(v, :tainted?)
+    assert_equal(Encoding.find("locale"), v.encoding)
   end
 
   def test_has_value2
@@ -409,7 +469,7 @@ class TestEnv < Test::Unit::TestCase
   if /mswin|mingw/ =~ RUBY_PLATFORM
     def test_win32_blocksize
       keys = []
-      len = 32767 - ENV.to_a.flatten.inject(0) {|r,e| r + e.bytesize + 1}
+      len = 32767 - ENV.to_a.flatten.inject(1) {|r,e| r + e.bytesize + 1}
       val = "bar" * 1000
       key = nil
       while (len -= val.size + (key="foo#{len}").size + 2) > 0
@@ -440,6 +500,20 @@ class TestEnv < Test::Unit::TestCase
       assert_predicate(ENV[k], :frozen?, "[#{k.dump}]")
       assert_predicate(ENV.fetch(k), :frozen?, "fetch(#{k.dump})")
     end
+  end
+
+  def test_shared_substring
+    bug12475 = '[ruby-dev:49655] [Bug #12475]'
+    n = [*"0".."9"].join("")*3
+    e0 = ENV[n0 = "E#{n}"]
+    e1 = ENV[n1 = "E#{n}."]
+    ENV[n0] = nil
+    ENV[n1] = nil
+    ENV[n1.chop] = "T#{n}.".chop
+    ENV[n0], e0 = e0, ENV[n0]
+    ENV[n1], e1 = e1, ENV[n1]
+    assert_equal("T#{n}", e0, bug12475)
+    assert_nil(e1, bug12475)
   end
 
   if RUBY_PLATFORM =~ /bccwin|mswin|mingw/
@@ -481,6 +555,17 @@ class TestEnv < Test::Unit::TestCase
         doit = proc {ENV[k] = v; ENV.shift}
         500.times(&doit)
       end;
+    end
+
+    if Encoding.find("locale") == Encoding::UTF_8
+      def test_utf8
+        text = "testing \u{e5 e1 e2 e4 e3 101 3042}"
+        test = ENV["test"]
+        ENV["test"] = text
+        assert_equal text, ENV["test"]
+      ensure
+        ENV["test"] = test
+      end
     end
   end
 end

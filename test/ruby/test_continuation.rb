@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 require 'test/unit'
 EnvUtil.suppress_warning {require 'continuation'}
 require 'fiber'
@@ -36,9 +37,11 @@ class TestContinuation < Test::Unit::TestCase
 
   def test_error
     cont = callcc{|c| c}
-    assert_raise(RuntimeError){
-      Thread.new{cont.call}.join
-    }
+    Thread.new{
+      assert_raise(RuntimeError){
+        cont.call
+      }
+    }.join
     assert_raise(LocalJumpError){
       callcc
     }
@@ -131,4 +134,3 @@ class TestContinuation < Test::Unit::TestCase
     assert_equal 3, @memo
   end
 end
-

@@ -1,11 +1,10 @@
 #!/usr/bin/env ruby -w
 # encoding: UTF-8
+# frozen_string_literal: false
 
 # ts_all.rb
 #
-#  Created by James Edward Gray II on 2005-10-31.
-#  Copyright 2005 James Edward Gray II. You can redistribute or modify this code
-#  under the terms of Ruby's license.
+# Created by James Edward Gray II on 2005-10-31.
 
 require "test/unit"
 

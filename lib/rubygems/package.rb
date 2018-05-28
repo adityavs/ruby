@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# frozen_string_literal: true
 #--
 # Copyright (C) 2004 Mauricio Julio Fernández Pradier
 # See LICENSE.txt for additional licensing information.
@@ -58,7 +59,7 @@ class Gem::Package
       if source
         @path = source.path
 
-        message << " in #{path}" if path
+        message = message + " in #{path}" if path
       end
 
       super message
@@ -210,13 +211,15 @@ class Gem::Package
       stat = File.lstat file
 
       if stat.symlink?
-        tar.add_symlink file, File.readlink(file), stat.mode
+        relative_dir = File.dirname(file).sub("#{Dir.pwd}/", '')
+        target_path = File.join(relative_dir, File.readlink(file))
+        tar.add_symlink file, target_path, stat.mode
       end
 
       next unless stat.file?
 
       tar.add_file_simple file, stat.mode, stat.size do |dst_io|
-        open file, 'rb' do |src_io|
+        File.open file, 'rb' do |src_io|
           dst_io.write src_io.read 16384 until src_io.eof?
         end
       end
@@ -375,14 +378,14 @@ EOM
             File.dirname destination
           end
 
-        FileUtils.mkdir_p mkdir, mkdir_options
+        mkdir_p_safe mkdir, mkdir_options, destination_dir, entry.full_name
 
-        open destination, 'wb' do |out|
+        File.open destination, 'wb' do |out|
           out.write entry.read
           FileUtils.chmod entry.header.mode, destination
         end if entry.file?
 
-        File.symlink(install_location(entry.header.linkname, destination_dir), destination) if entry.symlink?
+        File.symlink(entry.header.linkname, destination) if entry.symlink?
 
         verbose destination
       end
@@ -413,18 +416,41 @@ EOM
     raise Gem::Package::PathError.new(filename, destination_dir) if
       filename.start_with? '/'
 
-    destination_dir = File.realpath destination_dir if
-      File.respond_to? :realpath
+    destination_dir = realpath destination_dir
     destination_dir = File.expand_path destination_dir
 
     destination = File.join destination_dir, filename
     destination = File.expand_path destination
 
     raise Gem::Package::PathError.new(destination, destination_dir) unless
-      destination.start_with? destination_dir
+      destination.start_with? destination_dir + '/'
 
     destination.untaint
     destination
+  end
+
+  def normalize_path(pathname)
+    if Gem.win_platform?
+      pathname.downcase
+    else
+      pathname
+    end
+  end
+
+  def mkdir_p_safe mkdir, mkdir_options, destination_dir, file_name
+    destination_dir = realpath File.expand_path(destination_dir)
+    parts = mkdir.split(File::SEPARATOR)
+    parts.reduce do |path, basename|
+      path = realpath path  unless path == ""
+      path = File.expand_path(path + File::SEPARATOR + basename)
+      lstat = File.lstat path rescue nil
+      if !lstat || !lstat.directory?
+        unless normalize_path(path).start_with? normalize_path(destination_dir) and (FileUtils.mkdir path, mkdir_options rescue false)
+          raise Gem::Package::PathError.new(file_name, destination_dir)
+        end
+      end
+      path
+    end
   end
 
   ##
@@ -465,7 +491,7 @@ EOM
 
     @checksums = gem.seek 'checksums.yaml.gz' do |entry|
       Zlib::GzipReader.wrap entry do |gz_io|
-        YAML.load gz_io.read
+        Gem::SafeYAML.safe_load gz_io.read
       end
     end
   end
@@ -573,7 +599,7 @@ EOM
     end
 
     case file_name
-    when /^metadata(.gz)?$/ then
+    when "metadata", "metadata.gz" then
       load_spec entry
     when 'data.tar.gz' then
       verify_gz entry
@@ -600,6 +626,10 @@ EOM
       raise Gem::Package::FormatError.new \
               'package content (data.tar.gz) is missing', @gem
     end
+
+    if duplicates = @files.group_by {|f| f }.select {|k,v| v.size > 1 }.map(&:first) and duplicates.any?
+      raise Gem::Security::Exception, "duplicate files in the package: (#{duplicates.map(&:inspect).join(', ')})"
+    end
   end
 
   ##
@@ -611,6 +641,16 @@ EOM
     end
   rescue Zlib::GzipFile::Error => e
     raise Gem::Package::FormatError.new(e.message, entry.full_name)
+  end
+
+  if File.respond_to? :realpath
+    def realpath file
+      File.realpath file
+    end
+  else
+    def realpath file
+      file
+    end
   end
 
 end

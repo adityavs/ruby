@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 require 'rubygems/test_case'
 require 'rubygems/request_set'
 require 'rubygems/request_set/lockfile'
@@ -294,7 +295,7 @@ GEM
   end
 
   def write_lockfile lockfile
-    open @lock_file, 'w' do |io|
+    File.open @lock_file, 'w' do |io|
       io.write lockfile
     end
   end

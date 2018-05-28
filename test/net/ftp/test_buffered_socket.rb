@@ -1,5 +1,4 @@
-#
-# -*- frozen_string_literal: true -*-
+# frozen_string_literal: true
 
 require "net/ftp"
 require "test/unit"
@@ -32,6 +31,12 @@ class BufferedSocketTest < Test::Unit::TestCase
     sock = create_buffered_socket("foo\nbar")
     assert_equal("foo\n", sock.gets)
     assert_equal("bar", sock.gets)
+  end
+
+  def test_read_nil
+    sock = create_buffered_socket("foo\nbar")
+    assert_equal("foo\nbar", sock.read)
+    assert_equal("", sock.read)
   end
 
   private

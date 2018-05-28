@@ -1,5 +1,4 @@
-#
-# -*- frozen_string_literal: true -*-
+# frozen_string_literal: true
 #
 # tmpdir - retrieve temporary directory path
 #
@@ -83,7 +82,7 @@ class Dir
   #    FileUtils.remove_entry dir
   #  end
   #
-  def Dir.mktmpdir(prefix_suffix=nil, *rest)
+  def self.mktmpdir(prefix_suffix=nil, *rest)
     path = Tmpname.create(prefix_suffix || "d", *rest) {|n| mkdir(n, 0700)}
     if block_given?
       begin
@@ -107,18 +106,6 @@ class Dir
       Dir.tmpdir
     end
 
-    def make_tmpname((prefix, suffix), n)
-      prefix = (String.try_convert(prefix) or
-                raise ArgumentError, "unexpected prefix: #{prefix.inspect}")
-      suffix &&= (String.try_convert(suffix) or
-                  raise ArgumentError, "unexpected suffix: #{suffix.inspect}")
-      t = Time.now.strftime("%Y%m%d")
-      path = "#{prefix}#{t}-#{$$}-#{rand(0x100000000).to_s(36)}".dup
-      path << "-#{n}" if n
-      path << suffix if suffix
-      path
-    end
-
     def create(basename, tmpdir=nil, max_try: nil, **opts)
       if $SAFE > 0 and tmpdir.tainted?
         tmpdir = '/tmp'
@@ -126,8 +113,18 @@ class Dir
         tmpdir ||= tmpdir()
       end
       n = nil
+      prefix, suffix = basename
+      prefix = (String.try_convert(prefix) or
+                raise ArgumentError, "unexpected prefix: #{prefix.inspect}")
+      prefix = prefix.delete("#{File::SEPARATOR}#{File::ALT_SEPARATOR}")
+      suffix &&= (String.try_convert(suffix) or
+                  raise ArgumentError, "unexpected suffix: #{suffix.inspect}")
+      suffix &&= suffix.delete("#{File::SEPARATOR}#{File::ALT_SEPARATOR}")
       begin
-        path = File.join(tmpdir, make_tmpname(basename, n))
+        t = Time.now.strftime("%Y%m%d")
+        path = "#{prefix}#{t}-#{$$}-#{rand(0x100000000).to_s(36)}"\
+               "#{n ? %[-#{n}] : ''}#{suffix||''}"
+        path = File.join(tmpdir, path)
         yield(path, n, opts)
       rescue Errno::EEXIST
         n ||= 0

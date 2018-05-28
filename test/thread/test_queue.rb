@@ -1,9 +1,12 @@
+# frozen_string_literal: false
 require 'test/unit'
-require 'thread'
 require 'tmpdir'
 require 'timeout'
 
 class TestQueue < Test::Unit::TestCase
+  Queue = Thread::Queue
+  SizedQueue = Thread::SizedQueue
+
   def test_queue_initialized
     assert_raise(TypeError) {
       Queue.allocate.push(nil)
@@ -128,11 +131,10 @@ class TestQueue < Test::Unit::TestCase
   def test_thr_kill
     bug5343 = '[ruby-core:39634]'
     Dir.mktmpdir {|d|
-      timeout = 30
+      timeout = 60
       total_count = 250
       begin
         assert_normal_exit(<<-"_eom", bug5343, {:timeout => timeout, :chdir=>d})
-          require "thread"
           #{total_count}.times do |i|
             open("test_thr_kill_count", "w") {|f| f.puts i }
             queue = Queue.new
@@ -274,7 +276,7 @@ class TestQueue < Test::Unit::TestCase
     end
 
     q = DumpableQueue.new
-    assert_raise_with_message(TypeError, /internal Array/, bug9674) do
+    assert_raise(TypeError, bug9674) do
       Marshal.dump(q)
     end
   end
@@ -288,6 +290,7 @@ class TestQueue < Test::Unit::TestCase
       assert q.closed?
       assert_raise_with_message(ClosedQueueError, /closed/){q << :nothing}
       assert_equal q.pop, :something
+      assert_nil q.pop
       assert_nil q.pop
       # non-blocking
       assert_raise_with_message(ThreadError, /queue empty/){q.pop(non_block=true)}
@@ -306,10 +309,7 @@ class TestQueue < Test::Unit::TestCase
     # wait until queue empty
     (Thread.pass; sleep 0.01) until q.size == 0
 
-    # now there should be some waiting consumers
-    assert_equal num_threads - num_items, threads.count{|thr| thr.status}
-
-    # tell them all to go away
+    # close the queue so remaining threads will wake up
     q.close
 
     # wait for them to go away
@@ -373,7 +373,12 @@ class TestQueue < Test::Unit::TestCase
   def test_blocked_pushers
     q = SizedQueue.new 3
     prod_threads = 6.times.map do |i|
-      thr = Thread.new{q << i}; thr[:pc] = i; thr
+      thr = Thread.new{
+        Thread.current.report_on_exception = false
+        q << i
+      }
+      thr[:pc] = i
+      thr
     end
 
     # wait until some producer threads have finished, and the other 3 are blocked
@@ -413,25 +418,20 @@ class TestQueue < Test::Unit::TestCase
 
   def test_deny_pushers
     [->{Queue.new}, ->{SizedQueue.new 3}].each do |qcreate|
-      prod_threads = nil
       q = qcreate[]
       synq = Queue.new
-      producers_start = Thread.new do
-        prod_threads = 20.times.map do |i|
-          Thread.new{ synq.pop; q << i }
-        end
+      prod_threads = 20.times.map do |i|
+        Thread.new {
+          synq.pop
+          assert_raise(ClosedQueueError) {
+            q << i
+          }
+        }
       end
       q.close
       synq.close # start producer threads
 
-      # wait for all threads to be finished, because of exceptions
-      # NOTE: thr.status will be nil (raised) or false (terminated)
-      sleep 0.01 until prod_threads && prod_threads.all?{|thr| !thr.status}
-
-      # check that all threads failed to call push
-      prod_threads.each do |thr|
-        assert_kind_of ClosedQueueError, (thr.value rescue $!)
-      end
+      prod_threads.each(&:join)
     end
   end
 
@@ -451,7 +451,10 @@ class TestQueue < Test::Unit::TestCase
   def test_blocked_pushers_empty
     q = SizedQueue.new 3
     prod_threads = 6.times.map do |i|
-      Thread.new{ q << i}
+      Thread.new{
+        Thread.current.report_on_exception = false
+        q << i
+      }
     end
 
     # this ensures that all producer threads call push before close
@@ -484,36 +487,11 @@ class TestQueue < Test::Unit::TestCase
     assert_nil t.value
   end
 
-  def test_close_token_exception
-    [->{Queue.new}, ->{SizedQueue.new 3}].each do |qcreate|
-      q = qcreate[]
-      q.close true
-      assert_raise(ClosedQueueError){q.pop}
-    end
-  end
-
-  def test_close_token_loop
-    [->{Queue.new}, ->{SizedQueue.new 3}].each do |qcreate|
-      q = qcreate[]
-      popped_items = []
-      consumer_thread = Thread.new{loop{popped_items << q.pop}; :done}
-      7.times{|i| q << i}
-      q.close true
-      sleep 0.1 unless q.empty?
-      assert_equal :done, consumer_thread.value
-      assert_equal 7.times.to_a, popped_items
-    end
-  end
-
   def test_close_twice
     [->{Queue.new}, ->{SizedQueue.new 3}].each do |qcreate|
       q = qcreate[]
       q.close
       assert_nothing_raised(ClosedQueueError){q.close}
-
-      q = qcreate[]
-      q.close(true)
-      assert_nothing_raised(ClosedQueueError){q.close(false)}
     end
   end
 
@@ -533,16 +511,19 @@ class TestQueue < Test::Unit::TestCase
     consumers = rand(7..12).times.map do
       Thread.new do
         count = 0
-        loop do
-          i, st = q.pop
-          count += 1 if i.is_a?(Fixnum) && st.is_a?(String)
+        while e = q.pop
+          i, st = e
+          count += 1 if i.is_a?(Integer) && st.is_a?(String)
         end
         count
       end
     end
 
-    # No dead or finished threads
-    assert (consumers + producers).all?{|thr| thr.status =~ /\Arun|sleep\Z/}, 'no threads runnning'
+    # No dead or finished threads, give up to 10 seconds to start running
+    t = Time.now
+    Thread.pass until Time.now - t > 10 || (consumers + producers).all?{|thr| thr.status =~ /\A(?:run|sleep)\z/}
+
+    assert (consumers + producers).all?{|thr| thr.status =~ /\A(?:run|sleep)\z/}, 'no threads running'
 
     # just exercising the concurrency of the support methods.
     counter = Thread.new do
@@ -554,7 +535,7 @@ class TestQueue < Test::Unit::TestCase
     end
 
     producers.each &:join
-    q.close true
+    q.close
 
     # results not randomly distributed. Not sure why.
     # consumers.map{|thr| thr.value}.each do |x|
@@ -567,4 +548,69 @@ class TestQueue < Test::Unit::TestCase
     # don't leak this thread
     assert_nothing_raised{counter.join}
   end
+
+  def test_queue_with_trap
+    assert_in_out_err([], <<-INPUT, %w(INT INT exit), [])
+      q = Queue.new
+      trap(:INT){
+        q.push 'INT'
+      }
+      Thread.new{
+        loop{
+          Process.kill :INT, $$
+        }
+      }
+      puts q.pop
+      puts q.pop
+      puts 'exit'
+    INPUT
+  end
+
+  def test_fork_while_queue_waiting
+    q = Queue.new
+    sq = SizedQueue.new(1)
+    thq = Thread.new { q.pop }
+    thsq = Thread.new { sq.pop }
+    Thread.pass until thq.stop? && thsq.stop?
+
+    pid = fork do
+      exit!(1) if q.num_waiting != 0
+      exit!(2) if sq.num_waiting != 0
+      exit!(6) unless q.empty?
+      exit!(7) unless sq.empty?
+      q.push :child_q
+      sq.push :child_sq
+      exit!(3) if q.pop != :child_q
+      exit!(4) if sq.pop != :child_sq
+      exit!(0)
+    end
+    _, s = Process.waitpid2(pid)
+    assert_predicate s, :success?, 'no segfault [ruby-core:86316] [Bug #14634]'
+
+    q.push :thq
+    sq.push :thsq
+    assert_equal :thq, thq.value
+    assert_equal :thsq, thsq.value
+
+    sq.push(1)
+    th = Thread.new { q.pop; sq.pop }
+    thsq = Thread.new { sq.push(2) }
+    Thread.pass until th.stop? && thsq.stop?
+    pid = fork do
+      exit!(1) if q.num_waiting != 0
+      exit!(2) if sq.num_waiting != 0
+      exit!(3) unless q.empty?
+      exit!(4) if sq.empty?
+      exit!(5) if sq.pop != 1
+      exit!(0)
+    end
+    _, s = Process.waitpid2(pid)
+    assert_predicate s, :success?, 'no segfault [ruby-core:86316] [Bug #14634]'
+
+    assert_predicate thsq, :stop?
+    assert_equal 1, sq.pop
+    assert_same sq, thsq.value
+    q.push('restart th')
+    assert_equal 2, th.value
+  end if Process.respond_to?(:fork)
 end

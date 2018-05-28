@@ -63,9 +63,10 @@ The following are <i>metacharacters</i> <tt>(</tt>, <tt>)</tt>,
 <tt>[</tt>, <tt>]</tt>, <tt>{</tt>, <tt>}</tt>, <tt>.</tt>, <tt>?</tt>,
 <tt>+</tt>, <tt>*</tt>. They have a specific meaning when appearing in a
 pattern. To match them literally they must be backslash-escaped. To match
-a backslash literally backslash-escape that: <tt>\\\\\\</tt>.
+a backslash literally, backslash-escape it: <tt>\\\\</tt>.
 
     /1 \+ 2 = 3\?/.match('Does 1 + 2 = 3?') #=> #<MatchData "1 + 2 = 3?">
+    /a\\\\b/.match('a\\\\b')                    #=> #<MatchData "a\\b">
 
 Patterns behave like double-quoted strings so can contain the same
 backslash escapes.
@@ -227,7 +228,7 @@ Capture groups can be referred to by name when defined with the
 constructs.
 
     /\$(?<dollars>\d+)\.(?<cents>\d+)/.match("$3.67")
-        => #<MatchData "$3.67" dollars:"3" cents:"67">
+        #=> #<MatchData "$3.67" dollars:"3" cents:"67">
     /\$(?<dollars>\d+)\.(?<cents>\d+)/.match("$3.67")[:dollars] #=> "3"
 
 Named groups can be backreferenced with <tt>\k<</tt><i>name</i><tt>></tt>,
@@ -470,7 +471,19 @@ characters, <i>anchoring</i> the match to a specific position.
 * <tt>\Z</tt> - Matches end of string. If string ends with a newline,
   it matches just before newline
 * <tt>\z</tt> - Matches end of string
-* <tt>\G</tt> - Matches point where last match finished
+* <tt>\G</tt> - Matches first matching position:
+
+  In methods like <tt>String#gsub</tt> and <tt>String#scan</tt>, it changes on each iteration.
+  It initially matches the beginning of subject, and in each following iteration it matches where the last match finished.
+
+      "    a b c".gsub(/ /, '_')    #=> "____a_b_c"
+      "    a b c".gsub(/\G /, '_')  #=> "____a b c"
+
+  In methods like <tt>Regexp#match</tt> and <tt>String#match</tt> that take an (optional) offset, it matches where the search begins.
+
+      "hello, world".match(/,/, 3)    #=> #<MatchData ",">
+      "hello, world".match(/\G,/, 3)  #=> nil
+
 * <tt>\b</tt> - Matches word boundaries when outside brackets;
   backspace (0x08) when inside brackets
 * <tt>\B</tt> - Matches non-word boundaries
@@ -568,6 +581,9 @@ Comments can be included in a non-<tt>x</tt> pattern with the
 <tt>(?#</tt><i>comment</i><tt>)</tt> construct, where <i>comment</i> is
 arbitrary text ignored by the regexp engine.
 
+Comments in regexp literals cannot include unescaped terminator
+characters.
+
 == Encoding
 
 Regular expressions are assumed to use the source encoding. This can be
@@ -592,9 +608,9 @@ regexp's encoding can be explicitly fixed by supplying
 <tt>Regexp.new</tt>:
 
     r = Regexp.new("a".force_encoding("iso-8859-1"),Regexp::FIXEDENCODING)
-    r =~"a\u3042"
-       #=> Encoding::CompatibilityError: incompatible encoding regexp match
-            (ISO-8859-1 regexp with UTF-8 string)
+    r =~ "a\u3042"
+       # raises Encoding::CompatibilityError: incompatible encoding regexp match
+       #         (ISO-8859-1 regexp with UTF-8 string)
 
 == Special global variables
 

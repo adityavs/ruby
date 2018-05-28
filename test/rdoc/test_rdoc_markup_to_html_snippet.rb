@@ -1,4 +1,5 @@
-require 'rdoc/test_case'
+# frozen_string_literal: true
+require 'minitest_helper'
 
 class TestRDocMarkupToHtmlSnippet < RDoc::Markup::FormatterTestCase
 
@@ -493,9 +494,9 @@ be guessed, raises an error if +name+ couldn't be guessed.
     rdoc = <<-RDOC
 = \RDoc - Ruby Documentation System
 
-* {RDoc Project Page}[https://github.com/rdoc/rdoc/]
-* {RDoc Documentation}[http://docs.seattlerb.org/rdoc]
-* {RDoc Bug Tracker}[https://github.com/rdoc/rdoc/issues]
+* {RDoc Project Page}[https://github.com/ruby/rdoc]
+* {RDoc Documentation}[https://ruby.github.io/rdoc]
+* {RDoc Bug Tracker}[https://github.com/ruby/rdoc/issues]
 
 == DESCRIPTION:
 
@@ -603,7 +604,7 @@ This routine modifies its +comment+ parameter.
     rdoc = "* text\n" * 2
 
     expected = "<p>text\n"
-    expected.chomp!
+    expected = expected.chomp
     expected << " #{@ellipsis}\n"
 
     actual = @to.convert rdoc
@@ -708,4 +709,3 @@ This routine modifies its +comment+ parameter.
   end
 
 end
-

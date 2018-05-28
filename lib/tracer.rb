@@ -1,7 +1,7 @@
+# frozen_string_literal: false
 #--
 # $Release Version: 0.3$
 # $Revision: 1.12 $
-require "thread"
 
 ##
 # Outputs a source level execution trace of a Ruby program.
@@ -90,7 +90,7 @@ class Tracer
   Tracer::display_thread_id = true
   Tracer::display_c_call = false
 
-  @stdout_mutex = Mutex.new
+  @stdout_mutex = Thread::Mutex.new
 
   # Symbol table used for displaying trace information
   EVENT_SYMBOL = {

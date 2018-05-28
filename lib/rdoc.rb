@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 $DEBUG_RDOC = nil
 
 # :main: README.rdoc
@@ -64,7 +65,7 @@ module RDoc
   ##
   # RDoc version you are using
 
-  VERSION = '4.2.0'
+  VERSION = '6.0.4'
 
   ##
   # Method visibilities
@@ -109,6 +110,8 @@ module RDoc
   def self.load_yaml
     begin
       gem 'psych'
+    rescue NameError => e # --disable-gems
+      raise unless e.name == :gem
     rescue Gem::LoadError
     end
 
@@ -121,8 +124,6 @@ module RDoc
   end
 
   autoload :RDoc,           'rdoc/rdoc'
-
-  autoload :TestCase,       'rdoc/test_case'
 
   autoload :CrossReference, 'rdoc/cross_reference'
   autoload :ERBIO,          'rdoc/erbio'
@@ -145,13 +146,12 @@ module RDoc
 
   autoload :KNOWN_CLASSES,  'rdoc/known_classes'
 
-  autoload :RubyLex,        'rdoc/ruby_lex'
-  autoload :RubyToken,      'rdoc/ruby_token'
+  autoload :RipperStateLex, 'rdoc/parser/ripper_state_lex'
   autoload :TokenStream,    'rdoc/token_stream'
 
   autoload :Comment,        'rdoc/comment'
 
-  autoload :I18n,           'rdoc/i18n'
+  require 'rdoc/i18n'
 
   # code objects
   #
@@ -182,4 +182,3 @@ module RDoc
   autoload :Require,        'rdoc/require'
 
 end
-

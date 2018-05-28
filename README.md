@@ -1,23 +1,26 @@
+[![Build Status](https://travis-ci.org/ruby/ruby.svg)](https://travis-ci.org/ruby/ruby)
+[![Build status](https://ci.appveyor.com/api/projects/status/0sy8rrxut4o0k960/branch/trunk?svg=true)](https://ci.appveyor.com/project/ruby/ruby/branch/trunk)
+
 # What's Ruby
 
 Ruby is the interpreted scripting language for quick and easy object-oriented
-programming.  It has many features to process text files and to do system
-management tasks (as in Perl).  It is simple, straight-forward, and
+programming. It has many features to process text files and to do system
+management tasks (as in Perl). It is simple, straight-forward, and
 extensible.
 
 ## Features of Ruby
 
 *   Simple Syntax
 *   **Normal** Object-oriented Features (e.g. class, method calls)
-*   **Advanced** Object-oriented Features (e.g. Mix-in, Singleton-method)
+*   **Advanced** Object-oriented Features (e.g. mix-in, singleton-method)
 *   Operator Overloading
 *   Exception Handling
 *   Iterators and Closures
 *   Garbage Collection
 *   Dynamic Loading of Object Files (on some architectures)
 *   Highly Portable (works on many Unix-like/POSIX compatible platforms as
-    well as Windows, Mac OS X, BeOS, etc.) cf.
-    http://bugs.ruby-lang.org/projects/ruby-trunk/wiki/SupportedPlatforms
+    well as Windows, macOS, Haiku, etc.) cf.
+    https://bugs.ruby-lang.org/projects/ruby-trunk/wiki/SupportedPlatforms
 
 
 ## How to get Ruby
@@ -25,7 +28,7 @@ extensible.
 For a complete list of ways to install Ruby, including using third-party tools
 like rvm, see:
 
-http://www.ruby-lang.org/en/downloads/
+https://www.ruby-lang.org/en/downloads/
 
 The Ruby distribution files can be found on the following FTP site:
 
@@ -34,16 +37,16 @@ ftp://ftp.ruby-lang.org/pub/ruby/
 The trunk of the Ruby source tree can be checked out with the following
 command:
 
-    $ svn co http://svn.ruby-lang.org/repos/ruby/trunk/ ruby
+    $ svn co https://svn.ruby-lang.org/repos/ruby/trunk/ ruby
 
 Or if you are using git then use the following command:
 
-    $ git clone git://github.com/ruby/ruby.git
+    $ git clone https://github.com/ruby/ruby.git
 
-There are some other branches under development.  Try the following command
+There are some other branches under development. Try the following command
 to see the list of branches:
 
-    $ svn ls http://svn.ruby-lang.org/repos/ruby/branches/
+    $ svn ls https://svn.ruby-lang.org/repos/ruby/branches/
 
 Or if you are using git then use the following command:
 
@@ -53,32 +56,32 @@ Or if you are using git then use the following command:
 
 The URL of the Ruby home page is:
 
-http://www.ruby-lang.org/
+https://www.ruby-lang.org/
 
 ## Mailing list
 
-There is a mailing list to talk about Ruby. To subscribe this list, please
+There is a mailing list to talk about Ruby. To subscribe to this list, please
 send the following phrase:
 
     subscribe
 
 in the mail body (not subject) to the address
-<mailto:ruby-talk-request@ruby-lang.org>.
+<ruby-talk-request@ruby-lang.org>.
 
 ## How to compile and install
 
 This is what you need to do to compile and install Ruby:
 
-1.  If you want to use Microsoft Visual C++ to compile ruby, read
-    win32/README.win32 instead of this document.
+1.  If you want to use Microsoft Visual C++ to compile Ruby, read
+    [win32/README.win32](win32/README.win32) instead of this document.
 
-2.  If `./configure` does not exist or is older than configure.in, run
+2.  If `./configure` does not exist or is older than `configure.ac`, run
     `autoconf` to (re)generate configure.
 
 3.  Run `./configure`, which will generate `config.h` and `Makefile`.
 
     Some C compiler flags may be added by default depending on your
-    environment.  Specify `optflags=..` and `warnflags=..` as necessary to
+    environment. Specify `optflags=..` and `warnflags=..` as necessary to
     override them.
 
 4.  Edit `defines.h` if you need. Usually this step will not be needed.
@@ -94,13 +97,21 @@ This is what you need to do to compile and install Ruby:
 
 6.  Run `make`.
 
+    * On Mac, set RUBY\_CODESIGN environment variable with a signing identity.
+      It uses the identity to sign `ruby` binary. See also codesign(1).
+
 7.  Optionally, run '`make check`' to check whether the compiled Ruby
     interpreter works well. If you see the message "`check succeeded`", your
-    ruby works as it should (hopefully).
+    Ruby works as it should (hopefully).
 
-8.  Run '`make install`'
+8.  Optionally, run `make update-gems` and `make extract-gems`.
 
-    This command will create following directories and install files onto
+    If you want to install bundled gems, run `make update-gems` and
+    `make extract-gems` before running `make install`.
+
+9.  Run '`make install`'.
+
+    This command will create the following directories and install files into
     them.
 
     *   `${DESTDIR}${prefix}/bin`
@@ -127,10 +138,10 @@ This is what you need to do to compile and install Ruby:
     **NOTE**: teeny of the API version may be different from one of Ruby's
     program version
 
-    You may have to be a super user to install ruby.
+    You may have to be a super user to install Ruby.
 
 
-If you fail to compile ruby, please send the detailed error report with the
+If you fail to compile Ruby, please send the detailed error report with the
 error log and machine/OS type, to help others.
 
 Some extension libraries may not get compiled because of lack of necessary
@@ -139,21 +150,21 @@ to remove old configuration after installing them in such case.
 
 ## Copying
 
-See the file `COPYING`.
+See the file [COPYING](COPYING).
 
 ## Feedback
 
 Questions about the Ruby language can be asked on the Ruby-Talk mailing list
-(http://www.ruby-lang.org/en/community/mailing-lists) or on websites like
-(http://stackoverflow.com).
+(https://www.ruby-lang.org/en/community/mailing-lists) or on websites like
+(https://stackoverflow.com).
 
-Bug reports should be filed at http://bugs.ruby-lang.org. Read [HowToReport] for more information.
+Bug reports should be filed at https://bugs.ruby-lang.org. Read [HowToReport] for more information.
 
 [HowToReport]: https://bugs.ruby-lang.org/projects/ruby/wiki/HowToReport
 
-##Contributing
+## Contributing
 
-See the file `CONTRIBUTING.md`
+See the file [CONTRIBUTING.md](CONTRIBUTING.md)
 
 
 ## The Author
@@ -161,4 +172,4 @@ See the file `CONTRIBUTING.md`
 Ruby was originally designed and developed by Yukihiro Matsumoto (Matz) in
 1995.
 
-<mailto:matz@ruby-lang.org>
+<matz@ruby-lang.org>

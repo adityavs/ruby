@@ -1,7 +1,10 @@
+# frozen_string_literal: true
 # TODO: the documentation in here is terrible.
 #
 # Each exception needs a brief description and the scenarios where it is
 # likely to be raised
+
+require 'rubygems/deprecate'
 
 ##
 # Base exception class for RubyGems.  All exception raised by RubyGems are a
@@ -10,10 +13,12 @@ class Gem::Exception < RuntimeError
 
   ##
   #--
-  # TODO: remove in RubyGems 3, nobody sets this
+  # TODO: remove in RubyGems 4, nobody sets this
 
   attr_accessor :source_exception # :nodoc:
 
+  extend Gem::Deprecate
+  deprecate :source_exception, :none, 2018, 12
 end
 
 class Gem::CommandLineError < Gem::Exception; end
@@ -137,7 +142,7 @@ class Gem::ImpossibleDependenciesError < Gem::Exception
     requester  = requester ? requester.spec.full_name : 'The user'
     dependency = @request.dependency
 
-    message = "#{requester} requires #{dependency} but it conflicted:\n"
+    message = "#{requester} requires #{dependency} but it conflicted:\n".dup
 
     @conflicts.each do |_, conflict|
       message << conflict.explanation
@@ -153,6 +158,12 @@ class Gem::ImpossibleDependenciesError < Gem::Exception
 end
 
 class Gem::InstallError < Gem::Exception; end
+class Gem::RuntimeRequirementNotMetError < Gem::InstallError
+  attr_accessor :suggestion
+  def message
+    [suggestion, super].compact.join("\n\t")
+  end
+end
 
 ##
 # Potentially raised when a specification is validated.
@@ -267,4 +278,3 @@ end
 # Backwards compatible typo'd exception class for early RubyGems 2.0.x
 
 Gem::UnsatisfiableDepedencyError = Gem::UnsatisfiableDependencyError # :nodoc:
-

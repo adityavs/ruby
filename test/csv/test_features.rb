@@ -1,11 +1,10 @@
 #!/usr/bin/env ruby -w
 # encoding: UTF-8
+# frozen_string_literal: false
 
 # tc_features.rb
 #
-#  Created by James Edward Gray II on 2005-10-31.
-#  Copyright 2005 James Edward Gray II. You can redistribute or modify this code
-#  under the terms of Ruby's license.
+# Created by James Edward Gray II on 2005-10-31.
 
 begin
   require "zlib"
@@ -103,6 +102,20 @@ class TestCSV::Features < TestCSV
     assert_equal($/, CSV.new(STDERR).row_sep)
   end
 
+  def test_line
+    lines = [
+      %Q(abc,def\n),
+      %Q(abc,"d\nef"\n),
+      %Q(abc,"d\r\nef"\n),
+      %Q(abc,"d\ref")
+    ]
+    csv = CSV.new(lines.join(''))
+    lines.each do |line|
+      csv.shift
+      assert_equal(line, csv.line)
+    end
+  end
+
   def test_lineno
     assert_equal(5, @sample_data.lines.to_a.size)
 
@@ -123,8 +136,11 @@ class TestCSV::Features < TestCSV
   end
 
   def test_unknown_options
-    assert_raise_with_message(ArgumentError, /unknown/) {
+    assert_raise_with_message(ArgumentError, /unknown keyword/) {
       CSV.new(@sample_data, unknown: :error)
+    }
+    assert_raise_with_message(ArgumentError, /unknown keyword/) {
+      CSV.new(@sample_data, universal_newline: true)
     }
   end
 
@@ -139,6 +155,29 @@ class TestCSV::Features < TestCSV
       assert_equal("line", row.first)
     end
     assert_equal(3, count)
+  end
+
+  def test_liberal_parsing
+    input = '"Johnson, Dwayne",Dwayne "The Rock" Johnson'
+    assert_raise(CSV::MalformedCSVError) do
+        CSV.parse_line(input)
+    end
+    assert_equal(["Johnson, Dwayne", 'Dwayne "The Rock" Johnson'],
+                 CSV.parse_line(input, liberal_parsing: true))
+
+    input = '"quoted" field'
+    assert_raise(CSV::MalformedCSVError) do
+        CSV.parse_line(input)
+    end
+    assert_equal(['"quoted" field'],
+                 CSV.parse_line(input, liberal_parsing: true))
+
+    assert_raise(CSV::MalformedCSVError) do
+      CSV.parse_line('is,this "three," or four,fields', liberal_parsing: true)
+    end
+
+    assert_equal(["is", 'this "three', ' or four"', "fields"],
+      CSV.parse_line('is,this "three, or four",fields', liberal_parsing: true))
   end
 
   def test_csv_behavior_readers
@@ -263,26 +302,24 @@ class TestCSV::Features < TestCSV
   end
 
   def test_inspect_shows_headers_when_available
-    CSV.new("one,two,three\n1,2,3\n", headers: true) do |csv|
-      assert_include(csv.inspect, "headers:true", "Header hint not shown.")
-      csv.shift  # load headers
-      assert_match(/headers:\[[^\]]+\]/, csv.inspect)
-    end
+    csv = CSV.new("one,two,three\n1,2,3\n", headers: true)
+    assert_include(csv.inspect, "headers:true", "Header hint not shown.")
+    csv.shift  # load headers
+    assert_match(/headers:\[[^\]]+\]/, csv.inspect)
   end
 
   def test_inspect_encoding_is_ascii_compatible
-    CSV.new("one,two,three\n1,2,3\n".encode("UTF-16BE")) do |csv|
-      assert_send([Encoding, :compatible?,
-                   Encoding.find("US-ASCII"), csv.inspect.encoding],
-                  "inspect() was not ASCII compatible.")
-    end
+    csv = CSV.new("one,two,three\n1,2,3\n".encode("UTF-16BE"))
+    assert_send([Encoding, :compatible?,
+                  Encoding.find("US-ASCII"), csv.inspect.encoding],
+                "inspect() was not ASCII compatible.")
   end
 
   def test_version
     assert_not_nil(CSV::VERSION)
     assert_instance_of(String, CSV::VERSION)
     assert_predicate(CSV::VERSION, :frozen?)
-    assert_match(/\A\d\.\d\.\d\Z/, CSV::VERSION)
+    assert_match(/\A\d\.\d\.\d\z/, CSV::VERSION)
   end
 
   def test_accepts_comment_skip_lines_option
@@ -312,6 +349,17 @@ class TestCSV::Features < TestCSV
     assert_equal [["line", "1", "a"], ["line", "2", "b"]], c.each.to_a
   end
 
+  def test_comment_rows_are_ignored_with_heredoc
+    sample_data = <<~EOL
+      1,foo
+      .2,bar
+      3,baz
+    EOL
+
+    c = CSV.new(sample_data, skip_lines: ".")
+    assert_equal [["1", "foo"], ["3", "baz"]], c.each.to_a
+  end
+
   def test_quoted_skip_line_markers_are_ignored
     sample_data = "line,1,a\n\"#not\",a,line\nline,2,b"
     c = CSV.new sample_data, :skip_lines => /\A\s*#/
@@ -324,4 +372,7 @@ class TestCSV::Features < TestCSV
     assert_equal [["line", "1", "a"], ["line", "2", "b"]], c.each.to_a
   end
 
+  def test_table_nil_equality
+    assert_nothing_raised(NoMethodError) { CSV.parse("test", headers: true) == nil }
+  end
 end

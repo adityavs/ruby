@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 require "mkmf"
 
 readline = Struct.new(:headers, :extra_check).new(["stdio.h"])
@@ -37,6 +38,7 @@ have_library("ncurses", "tgetnum") ||
 case enable_libedit
 when true
   # --enable-libedit
+  dir_config("libedit")
   unless (readline.have_header("editline/readline.h") ||
           readline.have_header("readline/readline.h")) &&
           have_library("edit", "readline")
@@ -57,7 +59,7 @@ else
             have_library("edit", "readline"))) ||
             (readline.have_header("editline/readline.h") &&
              have_library("edit", "readline"))
-    raise "readline nor libedit not found"
+    raise "Neither readline nor libedit was found"
   end
 end
 
@@ -79,6 +81,7 @@ readline.have_var("rl_library_version")
 readline.have_var("rl_editing_mode")
 readline.have_var("rl_line_buffer")
 readline.have_var("rl_point")
+readline.have_var("rl_char_is_quoted_p")
 # workaround for native windows.
 /mswin|bccwin|mingw/ !~ RUBY_PLATFORM && readline.have_var("rl_event_hook")
 /mswin|bccwin|mingw/ !~ RUBY_PLATFORM && readline.have_var("rl_catch_sigwinch")

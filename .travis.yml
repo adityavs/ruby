@@ -16,93 +16,86 @@
 #
 # is also a good place to look at.
 
-# Language specification.
 language: c
+dist: trusty
 
-# Compilers.  Several  compilers are  provided in Travis,  so we try  them all.
-# The value set here is visible via $CC environment variable.
+sudo: false
+
 compiler:
   - gcc
-  - clang
 
 os:
   - linux
-  - osx
 
-# Dependencies.  Some  header files are missing  in a Travis' worker  VM, so we
-# have  to install  them.  The  "1.9.1" here  is OK.   It is  the  most adopted
-# version string  for Debian/Ubuntu, and  no dependencies have been  changed so
-# far since the 1.9.1 release.
 before_install:
   - "CONFIG_FLAG="
-  - "if [[ $TRAVIS_OS_NAME = 'linux' ]]; then sudo apt-get -qq update; fi"
-  # Travis ships an outdated, broken version of libssl by default
-  - "if [[ $TRAVIS_OS_NAME = 'linux' ]]; then sudo apt-get -qq --only-upgrade install '^libssl.*'; fi"
-  - "if [[ $TRAVIS_OS_NAME = 'linux' ]]; then sudo apt-get -qq install $CC; fi" # upgrade if any
-  - "if [[ $TRAVIS_OS_NAME = 'linux' ]]; then JOBS='-j'; fi"
-  - "if [[ $TRAVIS_OS_NAME = 'osx' ]]; then brew install autoconf gdbm openssl; fi"
-  - "if [[ $TRAVIS_OS_NAME = 'osx' ]]; then CONFIG_FLAG=\"$CONFIG_FLAG --with-gdbm-dir=`brew --prefix gdbm`\"; fi"
-  - "if [[ $TRAVIS_OS_NAME = 'osx' ]]; then CONFIG_FLAG=\"$CONFIG_FLAG --with-openssl-dir=`brew --prefix openssl`\"; fi"
-  - "if [[ $TRAVIS_OS_NAME = 'osx' && $CC = 'gcc' ]]; then CC='gcc-4.9'; fi"
-install: "if [[ $TRAVIS_OS_NAME = 'linux' ]]; then sudo apt-get -qq build-dep ruby1.9.1 2>/dev/null; fi"
+  - "JOBS=-j`nproc`"
 
-# Script is where the test runs.  Note  we just do "make test", not other tests
-# like  test-all, test-rubyspec.   This is  because  they take  too much  time,
-# enough for Travis to shut down the VM as being stalled.
 before_script:
-  - "if [[ $TRAVIS_OS_NAME = 'osx' ]]; then rm -f ~/Library/Logs/DiagnosticReports/ruby_*.crash; fi"
+  - "echo JOBS=$JOBS"
   - "uname -a"
   - "uname -r"
   - "rm -fr .ext autom4te.cache"
-  - "make -f common.mk BASERUBY=ruby MAKEDIRS='mkdir -p' srcdir=. update-config_files"
-  - "autoconf"
-  - "mkdir config_1st config_2nd"
-  - "./configure -C --disable-install-doc --with-gcc=$CC $CONFIG_FLAG"
-  - "cp -pr config.status .ext/include config_1st"
+  - "echo $TERM"
+  - "> config.status"
+  - "sed -f tool/prereq.status Makefile.in common.mk > Makefile"
+  - "make update-config_files"
+  - "make touch-unicode-files"
+  - "make -s $JOBS srcs UNICODE_FILES=."
+  - "requests=; for req in ${RUBYSPEC_PULL_REQUEST//,/ }; do
+      requests=\"$requests +refs/pull/$req/merge:\";
+    done"
+  - "${requests:+git -C spec/ruby -c user.email=none -c user.name=none pull --no-edit origin $requests}"
+  - "${requests:+git -C spec/ruby log --oneline origin/master..@}"
+  - "rm config.status Makefile rbconfig.rb .rbconfig.time"
+  - "mkdir build config_1st config_2nd"
+  - "chmod -R a-w ."
+  - "chmod u+w build config_1st config_2nd"
+  - "cd build"
+  - "../configure -C --disable-install-doc --prefix=/tmp/ruby-prefix --with-gcc=$CC $CONFIG_FLAG"
+  - "cp -pr config.cache config.status .ext/include ../config_1st"
   - "make reconfig"
-  - "cp -pr config.status .ext/include config_2nd"
-  - "diff -ru config_1st config_2nd"
-  - "make after-update BASERUBY=ruby"
-  - "make -s $JOBS encs"
-  - "make -s $JOBS exts"
-  - "make update-rubyspec"
-  - "if [[ $TRAVIS_OS_NAME = 'osx' ]]; then echo 'exclude :test_deadlock_by_signal_at_forking, \"under investigation\"' >> test/excludes/TestProcess.rb; fi"
+  - "cp -pr config.cache config.status .ext/include ../config_2nd"
+  - "(cd .. && exec diff -ru config_1st config_2nd)"
+  - "make -s $JOBS && make install"
+
 script:
-  - "make test"
-  - "make test-all TESTOPTS='-q -j2'"
-  - "make test-rubyspec"
-after_failure:
-  - "if [[ $TRAVIS_OS_NAME = 'osx' ]]; then find ~/Library/Logs/DiagnosticReports -type f -name ruby_\\*.crash -ls -execdir cat {} \\; -delete; fi"
+  - "make -s test TESTOPTS=--color=never"
+  - "make -s $JOBS test-all -o exts TESTOPTS='-q --color=never --job-status=normal' RUBY_FORCE_TEST_JIT=1"
+  - "make -s $JOBS test-spec MSPECOPT=-j"
 
 # Branch matrix.  Not all branches are Travis-ready so we limit branches here.
 branches:
   only:
     - trunk
-    - ruby_2_0_0
-    - ruby_2_1
     - ruby_2_2
+    - ruby_2_3
+    - ruby_2_4
+    - ruby_2_5
+    - /^feature\//
+    - /^bug\//
 
 # We want to be notified when something happens.
 notifications:
   irc:
     channels:
-      - "irc.freenode.org#ruby-core"
-      - "irc.freenode.org#ruby-ja"
+      - "chat.freenode.net#ruby-core"
+      - "chat.freenode.net#ruby-ja"
     on_success: change # [always|never|change] # default: always
-    on_failure: change # [always|never|change] # default: always
+    on_failure: always # [always|never|change] # default: always
     template:
       - "%{message} by @%{author}: See %{build_url}"
 
-  # Update ruby-head installed on Travis CI so other projects can test against it.
-  webhooks:
-    urls:
-      - "https://rubies.travis-ci.org/rebuild/ruby-head"
-    on_success: always
-    on_failure: never
+  slack:
+    rooms:
+      - secure: i1GLETSKye85ea6dGNA3MxI/5myChmMFiZtBd5C69xK+s1sBFqEgOSbaSf9KHc0CYrHVyNhQMaZRruieV7xS+6Pfs0Zvxf1DO6QQTWC2KhkqwFDLvZncAzjoyASdR90hbr+iRPOngQ+HJuE94zemALAwEqNAinzA74PMiJXktqY= # ruby:<token>#commits
+      - secure: ah7UEHBvncXT7bM5mvYIQAO+tIyV/wl7nXLb7wQD16dO2v8Gragy0mWjB79Q09hrrMGmp6H9bCDpdGS80boIA5EHaHoG4QaP0i9bsSt8U2AMWgZtfyIgQKJ4H2kXkGlrjO+AXTgnIkP7LNjdgAVUUTGQPb26T3QmoN2Splt+fIQ= # ruby:<token>#alerts
+    on_pull_requests: false
+    on_success: change
+    on_failure: always
 
   email:
     - ko1c-failure@atdot.net
-    - shibata.hiroshi@gmail.com
 
 # Local Variables:
 # mode: YAML

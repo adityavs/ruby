@@ -1,8 +1,9 @@
+# frozen_string_literal: true
 require File.expand_path '../xref_test_case', __FILE__
 
 class TestRDocStore < XrefTestCase
 
-  OBJECT_ANCESTORS = defined?(::BasicObject) ? %w[BasicObject] : []
+  OBJECT_ANCESTORS = %w[BasicObject]
 
   def setup
     super
@@ -161,7 +162,7 @@ class TestRDocStore < XrefTestCase
 
   def test_all_classes_and_modules
     expected = %w[
-      C1 C2 C2::C3 C2::C3::H1 C3 C3::H1 C3::H2 C4 C4::C4 C5 C5::C1
+      C1 C2 C2::C3 C2::C3::H1 C3 C3::H1 C3::H2 C4 C4::C4 C5 C5::C1 C6 C7 C8 C8::S1
       Child
       M1 M1::M2
       Parent
@@ -212,7 +213,7 @@ class TestRDocStore < XrefTestCase
 
   def test_classes
     expected = %w[
-      C1 C2 C2::C3 C2::C3::H1 C3 C3::H1 C3::H2 C4 C4::C4 C5 C5::C1
+      C1 C2 C2::C3 C2::C3::H1 C3 C3::H1 C3::H2 C4 C4::C4 C5 C5::C1 C6 C7 C8 C8::S1
       Child
       Parent
     ]
@@ -221,7 +222,8 @@ class TestRDocStore < XrefTestCase
   end
 
   def test_complete
-    @c2.add_module_alias @c2_c3, 'A1', @top_level
+    a1 = RDoc::Constant.new 'A1', '', ''
+    @c2.add_module_alias @c2_c3, @c2_c3.name, a1, @top_level
 
     @store.complete :public
 
@@ -406,7 +408,7 @@ class TestRDocStore < XrefTestCase
 
     Dir.mkdir @tmpdir
 
-    open File.join(@tmpdir, 'cache.ri'), 'wb' do |io|
+    File.open File.join(@tmpdir, 'cache.ri'), 'wb' do |io|
       Marshal.dump cache, io
     end
 
@@ -428,8 +430,6 @@ class TestRDocStore < XrefTestCase
   end
 
   def test_load_cache_encoding_differs
-    skip "Encoding not implemented" unless Object.const_defined? :Encoding
-
     cache = {
       :c_class_variables           => {},
       :c_singleton_class_variables => {},
@@ -442,7 +442,7 @@ class TestRDocStore < XrefTestCase
 
     Dir.mkdir @tmpdir
 
-    open File.join(@tmpdir, 'cache.ri'), 'wb' do |io|
+    File.open File.join(@tmpdir, 'cache.ri'), 'wb' do |io|
       Marshal.dump cache, io
     end
 
@@ -491,7 +491,7 @@ class TestRDocStore < XrefTestCase
 
     Dir.mkdir @tmpdir
 
-    open File.join(@tmpdir, 'cache.ri'), 'wb' do |io|
+    File.open File.join(@tmpdir, 'cache.ri'), 'wb' do |io|
       Marshal.dump cache, io
     end
 
@@ -525,6 +525,15 @@ class TestRDocStore < XrefTestCase
     assert_includes @s.classes_hash, 'Object'
   end
 
+  def test_load_single_class
+    @s.save_class @c8_s1
+    @s.classes_hash.clear
+
+    assert_equal @c8_s1, @s.load_class('C8::S1')
+
+    assert_includes @s.classes_hash, 'C8::S1'
+  end
+
   def test_load_method
     @s.save_method @klass, @meth_bang
 
@@ -539,7 +548,7 @@ class TestRDocStore < XrefTestCase
 
     file = @s.method_file @klass.full_name, @meth.full_name
 
-    open file, 'wb' do |io|
+    File.open file, 'wb' do |io|
       io.write "\x04\bU:\x14RDoc::AnyMethod[\x0Fi\x00I" +
                "\"\vmethod\x06:\x06EF\"\x11Klass#method0:\vpublic" +
                "o:\eRDoc::Markup::Document\x06:\v@parts[\x06" +
@@ -564,7 +573,7 @@ class TestRDocStore < XrefTestCase
   end
 
   def test_main
-    assert_equal nil, @s.main
+    assert_nil @s.main
 
     @s.main = 'README.txt'
 
@@ -632,9 +641,9 @@ class TestRDocStore < XrefTestCase
       :title => nil,
     }
 
-    expected[:ancestors]['Object'] = %w[BasicObject] if defined?(::BasicObject)
+    expected[:ancestors]['Object'] = %w[BasicObject]
 
-    open File.join(@tmpdir, 'cache.ri'), 'rb' do |io|
+    File.open File.join(@tmpdir, 'cache.ri'), 'rb' do |io|
       cache = Marshal.load io.read
 
       assert_equal expected, cache
@@ -700,9 +709,9 @@ class TestRDocStore < XrefTestCase
       :title => 'title',
     }
 
-    expected[:ancestors]['Object'] = %w[BasicObject] if defined?(::BasicObject)
+    expected[:ancestors]['Object'] = %w[BasicObject]
 
-    open File.join(@tmpdir, 'cache.ri'), 'rb' do |io|
+    File.open File.join(@tmpdir, 'cache.ri'), 'rb' do |io|
       cache = Marshal.load io.read
 
       assert_equal expected, cache
@@ -982,7 +991,7 @@ class TestRDocStore < XrefTestCase
   end
 
   def test_title
-    assert_equal nil, @s.title
+    assert_nil @s.title
 
     @s.title = 'rdoc'
 
@@ -990,4 +999,3 @@ class TestRDocStore < XrefTestCase
   end
 
 end
-

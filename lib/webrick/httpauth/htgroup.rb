@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 #
 # httpauth/htgroup.rb -- Apache compatible htgroup file
 #
@@ -35,7 +36,7 @@ module WEBrick
         @path = path
         @mtime = Time.at(0)
         @group = Hash.new
-        open(@path,"a").close unless File::exist?(@path)
+        File.open(@path,"a").close unless File.exist?(@path)
         reload
       end
 
@@ -45,7 +46,7 @@ module WEBrick
       def reload
         if (mtime = File::mtime(@path)) > @mtime
           @group.clear
-          open(@path){|io|
+          File.open(@path){|io|
             while line = io.gets
               line.chomp!
               group, members = line.split(/:\s*/)

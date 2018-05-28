@@ -1,4 +1,5 @@
 # -*- coding: us-ascii -*-
+# frozen_string_literal: false
 require 'test/unit'
 require 'timeout'
 
@@ -91,9 +92,34 @@ module TestStruct
     assert_equal([:utime, :stime, :cutime, :cstime], Process.times.members)
   end
 
+  def test_struct_new_with_keyword_init
+    @Struct.new("KeywordInitTrue", :a, :b, keyword_init: true)
+    @Struct.new("KeywordInitFalse", :a, :b, keyword_init: false)
+
+    assert_raise(ArgumentError) { @Struct::KeywordInitTrue.new(1, 2) }
+    assert_nothing_raised { @Struct::KeywordInitFalse.new(1, 2) }
+    assert_nothing_raised { @Struct::KeywordInitTrue.new(a: 1, b: 2) }
+    assert_raise(ArgumentError) { @Struct::KeywordInitTrue.new(1, b: 2) }
+    assert_raise(ArgumentError) { @Struct::KeywordInitTrue.new(a: 1, b: 2, c: 3) }
+    assert_equal @Struct::KeywordInitTrue.new(a: 1, b: 2).values, @Struct::KeywordInitFalse.new(1, 2).values
+    assert_equal "#{@Struct}::KeywordInitFalse", @Struct::KeywordInitFalse.inspect
+    assert_equal "#{@Struct}::KeywordInitTrue(keyword_init: true)", @Struct::KeywordInitTrue.inspect
+
+    @Struct.instance_eval do
+      remove_const(:KeywordInitTrue)
+      remove_const(:KeywordInitFalse)
+    end
+  end
+
   def test_initialize
     klass = @Struct.new(:a)
     assert_raise(ArgumentError) { klass.new(1, 2) }
+    klass = @Struct.new(:total) do
+      def initialize(a, b)
+        super(a+b)
+      end
+    end
+    assert_equal 3, klass.new(1,2).total
   end
 
   def test_each
@@ -140,7 +166,7 @@ module TestStruct
     assert_equal("#<struct :@a=3>", o.inspect)
 
     methods = klass.instance_methods(false)
-    assert_equal([:@a, :"@a="].inspect, methods.inspect, '[Bug #8756]')
+    assert_equal([:@a, :"@a="].sort.inspect, methods.sort.inspect, '[Bug #8756]')
     assert_include(methods, :@a)
     assert_include(methods, :"@a=")
   end
@@ -155,8 +181,8 @@ module TestStruct
     klass = @Struct.new(:a)
     o = klass.new(1)
     assert_equal(1, o[0])
-    assert_raise(IndexError) { o[-2] }
-    assert_raise(IndexError) { o[1] }
+    assert_raise_with_message(IndexError, /offset -2\b/) {o[-2]}
+    assert_raise_with_message(IndexError, /offset 1\b/) {o[1]}
     assert_raise_with_message(NameError, /foo/) {o["foo"]}
     assert_raise_with_message(NameError, /foo/) {o[:foo]}
   end
@@ -166,8 +192,8 @@ module TestStruct
     o = klass.new(1)
     o[0] = 2
     assert_equal(2, o[:a])
-    assert_raise(IndexError) { o[-2] = 3 }
-    assert_raise(IndexError) { o[1] = 3 }
+    assert_raise_with_message(IndexError, /offset -2\b/) {o[-2] = 3}
+    assert_raise_with_message(IndexError, /offset 1\b/) {o[1] = 3}
     assert_raise_with_message(NameError, /foo/) {o["foo"] = 3}
     assert_raise_with_message(NameError, /foo/) {o[:foo] = 3}
   end
@@ -241,7 +267,7 @@ module TestStruct
   def test_hash
     klass = @Struct.new(:a)
     o = klass.new(1)
-    assert_kind_of(Fixnum, o.hash)
+    assert_kind_of(Integer, o.hash)
   end
 
   def test_eql
@@ -351,6 +377,20 @@ module TestStruct
     klass = @Struct.new(:a)
     x = klass.new
     assert_equal "[Bug #9353]", x.send(:a=, "[Bug #9353]")
+  end
+
+  def test_dig
+    klass = @Struct.new(:a)
+    o = klass.new(klass.new({b: [1, 2, 3]}))
+    assert_equal(1, o.dig(:a, :a, :b, 0))
+    assert_nil(o.dig(:b, 0))
+  end
+
+  def test_new_dupilicate
+    bug12291 = '[ruby-core:74971] [Bug #12291]'
+    assert_raise_with_message(ArgumentError, /duplicate member/, bug12291) {
+      @Struct.new(:a, :a)
+    }
   end
 
   class TopStruct < Test::Unit::TestCase

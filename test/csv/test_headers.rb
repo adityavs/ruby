@@ -1,11 +1,10 @@
 #!/usr/bin/env ruby -w
 # encoding: UTF-8
+# frozen_string_literal: false
 
 # tc_headers.rb
 #
-#  Created by James Edward Gray II on 2005-10-31.
-#  Copyright 2005 James Edward Gray II. You can redistribute or modify this code
-#  under the terms of Ruby's license.
+# Created by James Edward Gray II on 2005-10-31.
 
 require_relative "base"
 
@@ -221,6 +220,13 @@ class TestCSV::Headers < TestCSV
     csv = CSV.parse( "One,TWO Three ", headers:           true,
                                        return_headers:    true,
                                        header_converters: :symbol )
+    assert_equal([:one, :two_three], csv.headers)
+  end
+
+  def test_builtin_symbol_converter_with_punctuation
+    csv = CSV.parse( "One, Two & Three ($)", headers:           true,
+                                             return_headers:    true,
+                                             header_converters: :symbol )
     assert_equal([:one, :two_three], csv.headers)
   end
 

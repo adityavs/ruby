@@ -13,8 +13,9 @@
 # error too old GCC
 #endif
 
-#include "internal.h"
+#include "ruby/ruby.h"
 #include "ruby/io.h"
+#include "internal.h"
 #include "ruby/st.h"
 #include "ruby/util.h"
 #include "encindex.h"
@@ -128,6 +129,8 @@ mark_marshal_compat_t(void *tbl)
     st_foreach(tbl, mark_marshal_compat_i, 0);
 }
 
+static st_table *compat_allocator_table(void);
+
 void
 rb_marshal_define_compat(VALUE newclass, VALUE oldclass, VALUE (*dumper)(VALUE), VALUE (*loader)(VALUE, VALUE))
 {
@@ -146,7 +149,7 @@ rb_marshal_define_compat(VALUE newclass, VALUE oldclass, VALUE (*dumper)(VALUE),
     compat->dumper = dumper;
     compat->loader = loader;
 
-    st_insert(compat_allocator_tbl, (st_data_t)allocator, (st_data_t)compat);
+    st_insert(compat_allocator_table(), (st_data_t)allocator, (st_data_t)compat);
 }
 
 #define MARSHAL_INFECTION FL_TAINT
@@ -176,8 +179,22 @@ check_dump_arg(VALUE ret, struct dump_arg *arg, const char *name)
     }
     return ret;
 }
+
+static VALUE
+check_userdump_arg(VALUE obj, ID sym, int argc, const VALUE *argv,
+		   struct dump_arg *arg, const char *name)
+{
+    VALUE ret = rb_funcallv(obj, sym, argc, argv);
+    VALUE klass = CLASS_OF(obj);
+    if (CLASS_OF(ret) == klass) {
+        rb_raise(rb_eRuntimeError, "%"PRIsVALUE"#%s returned same class instance",
+		 klass, name);
+    }
+    return check_dump_arg(ret, arg, name);
+}
+
 #define dump_funcall(arg, obj, sym, argc, argv) \
-    check_dump_arg(rb_funcallv(obj, sym, argc, argv), arg, name_##sym)
+    check_userdump_arg(obj, sym, argc, argv, arg, name_##sym)
 #define dump_check_funcall(arg, obj, sym, argc, argv) \
     check_dump_arg(rb_check_funcall(obj, sym, argc, argv), arg, name_##sym)
 
@@ -205,7 +222,7 @@ free_dump_arg(void *ptr)
 static size_t
 memsize_dump_arg(const void *ptr)
 {
-    return ptr ? sizeof(struct dump_arg) : 0;
+    return sizeof(struct dump_arg);
 }
 
 static const rb_data_type_t dump_arg_data = {
@@ -589,16 +606,18 @@ encoding_name(VALUE obj, struct dump_arg *arg)
 static void
 w_encoding(VALUE encname, struct dump_call_arg *arg)
 {
+    int limit = arg->limit;
+    if (limit >= 0) ++limit;
     switch (encname) {
       case Qfalse:
       case Qtrue:
 	w_symbol(ID2SYM(rb_intern("E")), arg->arg);
-	w_object(encname, arg->arg, arg->limit + 1);
+	w_object(encname, arg->arg, limit);
       case Qnil:
 	return;
     }
     w_symbol(ID2SYM(rb_id_encoding()), arg->arg);
-    w_object(encname, arg->arg, arg->limit + 1);
+    w_object(encname, arg->arg, limit);
 }
 
 static st_index_t
@@ -635,16 +654,9 @@ w_ivar(st_index_t num, VALUE ivobj, VALUE encname, struct dump_call_arg *arg)
 static void
 w_objivar(VALUE obj, struct dump_call_arg *arg)
 {
-    VALUE *ptr;
-    long i, len, num;
+    st_data_t num = 0;
 
-    len = ROBJECT_NUMIV(obj);
-    ptr = ROBJECT_IVPTR(obj);
-    num = 0;
-    for (i = 0; i < len; i++)
-        if (ptr[i] != Qundef)
-            num += 1;
-
+    rb_ivar_foreach(obj, obj_count_ivars, (st_data_t)&num);
     w_long(num, arg->arg);
     if (num != 0) {
         rb_ivar_foreach(obj, w_obj_each, (st_data_t)arg);
@@ -664,7 +676,7 @@ w_object(VALUE obj, struct dump_arg *arg, int limit)
 	rb_raise(rb_eArgError, "exceed depth limit");
     }
 
-    limit--;
+    if (limit > 0) limit--;
     c_arg.limit = limit;
     c_arg.arg = arg;
 
@@ -1015,7 +1027,7 @@ rb_marshal_dump_limited(VALUE obj, VALUE port, int limit)
     struct dump_arg *arg;
     VALUE wrapper; /* used to avoid memory leak in case of exception */
 
-    wrapper = TypedData_Make_Struct(rb_cData, struct dump_arg, &dump_arg_data, arg);
+    wrapper = TypedData_Make_Struct(0, struct dump_arg, &dump_arg_data, arg);
     arg->dest = 0;
     arg->symbols = st_init_numtable();
     arg->data    = rb_init_identtable();
@@ -1096,7 +1108,7 @@ free_load_arg(void *ptr)
 static size_t
 memsize_load_arg(const void *ptr)
 {
-    return ptr ? sizeof(struct load_arg) : 0;
+    return sizeof(struct load_arg);
 }
 
 static const rb_data_type_t load_arg_data = {
@@ -1172,6 +1184,8 @@ r_byte(struct load_arg *arg)
     return c;
 }
 
+NORETURN(static void long_toobig(int size));
+
 static void
 long_toobig(int size)
 {
@@ -1179,19 +1193,11 @@ long_toobig(int size)
 	     STRINGIZE(SIZEOF_LONG)", given %d)", size);
 }
 
-#undef SIGN_EXTEND_CHAR
-#if __STDC__
-# define SIGN_EXTEND_CHAR(c) ((signed char)(c))
-#else  /* not __STDC__ */
-/* As in Harbison and Steele.  */
-# define SIGN_EXTEND_CHAR(c) ((((unsigned char)(c)) ^ 128) - 128)
-#endif
-
 static long
 r_long(struct load_arg *arg)
 {
     register long x;
-    int c = SIGN_EXTEND_CHAR(r_byte(arg));
+    int c = (signed char)r_byte(arg);
     long i;
 
     if (c == 0) return 0;
@@ -1420,15 +1426,14 @@ static VALUE
 r_fixup_compat(VALUE v, struct load_arg *arg)
 {
     st_data_t data;
-    if (arg->compat_tbl && st_lookup(arg->compat_tbl, v, &data)) {
+    st_data_t key = (st_data_t)v;
+    if (arg->compat_tbl && st_delete(arg->compat_tbl, &key, &data)) {
         VALUE real_obj = (VALUE)data;
         rb_alloc_func_t allocator = rb_get_alloc_func(CLASS_OF(real_obj));
-        st_data_t key = v;
         if (st_lookup(compat_allocator_tbl, (st_data_t)allocator, &data)) {
             marshal_compat_t *compat = (marshal_compat_t*)data;
             compat->loader(real_obj, v);
         }
-        st_delete(arg->compat_tbl, &key, 0);
         v = real_obj;
     }
     return v;
@@ -1575,7 +1580,7 @@ r_object0(struct load_arg *arg, int *ivp, VALUE extmod)
 	    rb_raise(rb_eArgError, "dump format error (unlinked)");
 	}
 	v = (VALUE)link;
-	r_post_proc(v, arg);
+	v = r_post_proc(v, arg);
 	break;
 
       case TYPE_IVAR:
@@ -1591,6 +1596,7 @@ r_object0(struct load_arg *arg, int *ivp, VALUE extmod)
 	{
 	    VALUE path = r_unique(arg);
 	    VALUE m = rb_path_to_class(path);
+	    if (NIL_P(extmod)) extmod = rb_ary_tmp_new(0);
 
 	    if (RB_TYPE_P(m, T_CLASS)) { /* prepended */
 		VALUE c;
@@ -1610,7 +1616,6 @@ r_object0(struct load_arg *arg, int *ivp, VALUE extmod)
 	    }
 	    else {
 		must_be_module(m, path);
-		if (NIL_P(extmod)) extmod = rb_ary_tmp_new(0);
 		rb_ary_push(extmod, m);
 
 		v = r_object0(arg, 0, extmod);
@@ -1673,13 +1678,13 @@ r_object0(struct load_arg *arg, int *ivp, VALUE extmod)
 	    const char *ptr = RSTRING_PTR(str);
 
 	    if (strcmp(ptr, "nan") == 0) {
-		d = NAN;
+		d = nan("");
 	    }
 	    else if (strcmp(ptr, "inf") == 0) {
-		d = INFINITY;
+		d = HUGE_VAL;
 	    }
 	    else if (strcmp(ptr, "-inf") == 0) {
-		d = -INFINITY;
+		d = -HUGE_VAL;
 	    }
 	    else {
 		char *e;
@@ -1770,7 +1775,7 @@ r_object0(struct load_arg *arg, int *ivp, VALUE extmod)
 	{
 	    long len = r_long(arg);
 
-	    v = rb_hash_new();
+	    v = rb_hash_new_with_size(len);
 	    v = r_entry(v, arg);
 	    arg->readable += (len - 1) * 2;
 	    while (len--) {
@@ -1809,17 +1814,30 @@ r_object0(struct load_arg *arg, int *ivp, VALUE extmod)
 	    arg->readable += (len - 1) * 2;
 	    v = r_entry0(v, idx, arg);
 	    values = rb_ary_new2(len);
-	    for (i=0; i<len; i++) {
-		VALUE n = rb_sym2str(RARRAY_AREF(mem, i));
-		slot = r_symbol(arg);
-
-		if (!rb_str_equal(n, slot)) {
-		    rb_raise(rb_eTypeError, "struct %"PRIsVALUE" not compatible (:%"PRIsVALUE" for :%"PRIsVALUE")",
-			     rb_class_name(klass),
-			     slot, n);
+	    {
+		VALUE keywords = Qfalse;
+		if (RTEST(rb_struct_s_keyword_init(klass))) {
+		    keywords = rb_hash_new();
+		    rb_ary_push(values, keywords);
 		}
-                rb_ary_push(values, r_object(arg));
-		arg->readable -= 2;
+
+		for (i=0; i<len; i++) {
+		    VALUE n = rb_sym2str(RARRAY_AREF(mem, i));
+		    slot = r_symbol(arg);
+
+		    if (!rb_str_equal(n, slot)) {
+			rb_raise(rb_eTypeError, "struct %"PRIsVALUE" not compatible (:%"PRIsVALUE" for :%"PRIsVALUE")",
+				 rb_class_name(klass),
+				 slot, n);
+		    }
+		    if (keywords) {
+			rb_hash_aset(keywords, RARRAY_AREF(mem, i), r_object(arg));
+		    }
+		    else {
+			rb_ary_push(values, r_object(arg));
+		    }
+		    arg->readable -= 2;
+		}
 	    }
             rb_struct_initialize(v, values);
             v = r_leave(v, arg);
@@ -1832,6 +1850,7 @@ r_object0(struct load_arg *arg, int *ivp, VALUE extmod)
 	    VALUE name = r_unique(arg);
 	    VALUE klass = path2class(name);
 	    VALUE data;
+	    st_data_t d;
 
 	    if (!rb_obj_respond_to(klass, s_load, TRUE)) {
 		rb_raise(rb_eTypeError, "class %"PRIsVALUE" needs to have method `_load'",
@@ -1844,7 +1863,11 @@ r_object0(struct load_arg *arg, int *ivp, VALUE extmod)
 	    }
 	    v = load_funcall(arg, klass, s_load, 1, &data);
 	    v = r_entry(v, arg);
-            v = r_leave(v, arg);
+	    if (st_lookup(compat_allocator_tbl, (st_data_t)rb_get_alloc_func(klass), &d)) {
+		marshal_compat_t *compat = (marshal_compat_t*)d;
+		v = compat->loader(klass, v);
+	    }
+	    v = r_post_proc(v, arg);
 	}
         break;
 
@@ -1966,6 +1989,11 @@ r_object0(struct load_arg *arg, int *ivp, VALUE extmod)
 	rb_raise(rb_eArgError, "dump format error(0x%x)", type);
 	break;
     }
+
+    if (v == Qundef) {
+	rb_raise(rb_eArgError, "dump format error (bad link)");
+    }
+
     return v;
 }
 
@@ -2041,7 +2069,7 @@ rb_marshal_load_with_proc(VALUE port, VALUE proc)
     else {
 	io_needed();
     }
-    wrapper = TypedData_Make_Struct(rb_cData, struct load_arg, &load_arg_data, arg);
+    wrapper = TypedData_Make_Struct(0, struct load_arg, &load_arg_data, arg);
     arg->infection = infection;
     arg->src = port;
     arg->offset = 0;
@@ -2218,13 +2246,19 @@ Init_marshal(void)
     rb_define_const(rb_mMarshal, "MAJOR_VERSION", INT2FIX(MARSHAL_MAJOR));
     /* minor version */
     rb_define_const(rb_mMarshal, "MINOR_VERSION", INT2FIX(MARSHAL_MINOR));
+}
 
+static st_table *
+compat_allocator_table(void)
+{
+    if (compat_allocator_tbl) return compat_allocator_tbl;
     compat_allocator_tbl = st_init_numtable();
 #undef RUBY_UNTYPED_DATA_WARNING
 #define RUBY_UNTYPED_DATA_WARNING 0
     compat_allocator_tbl_wrapper =
-	Data_Wrap_Struct(rb_cData, mark_marshal_compat_t, 0, compat_allocator_tbl);
+	Data_Wrap_Struct(0, mark_marshal_compat_t, 0, compat_allocator_tbl);
     rb_gc_register_mark_object(compat_allocator_tbl_wrapper);
+    return compat_allocator_tbl;
 }
 
 VALUE

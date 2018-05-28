@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 require 'rubygems/test_case'
 require 'rubygems/dependency_installer'
 require 'rubygems/security'
@@ -423,7 +424,7 @@ class TestGemDependencyInstaller < Gem::TestCase
     extconf_rb = File.join @gemhome, 'gems', 'e-1', 'extconf.rb'
     FileUtils.mkdir_p File.dirname extconf_rb
 
-    open extconf_rb, 'w' do |io|
+    File.open extconf_rb, 'w' do |io|
       io.write <<-EXTCONF_RB
         require 'mkmf'
         create_makefile 'e'

@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 #
 # cgi.rb -- Yet another CGI library
 #
@@ -262,6 +263,10 @@ module WEBrick
 
       def <<(data)
         @out_port << data
+      end
+
+      def write(data)
+        @out_port.write(data)
       end
 
       def cert

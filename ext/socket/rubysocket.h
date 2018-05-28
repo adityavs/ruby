@@ -27,11 +27,7 @@
 #    undef HAVE_TYPE_STRUCT_SOCKADDR_DL
 #  endif
 #else
-#  if defined(__BEOS__) && !defined(__HAIKU__) && !defined(BONE)
-#    include <net/socket.h>
-#  else
-#    include <sys/socket.h>
-#  endif
+#  include <sys/socket.h>
 #  include <netinet/in.h>
 #  ifdef HAVE_NETINET_IN_SYSTM_H
 #    include <netinet/in_systm.h>
@@ -222,11 +218,6 @@ typedef union {
 #  endif
 #endif
 
-#ifdef __BEOS__
-#  undef close
-#  define close closesocket
-#endif
-
 #define INET_CLIENT 0
 #define INET_SERVER 1
 #define INET_SOCKS  2
@@ -347,28 +338,34 @@ enum sock_recv_type {
     RECV_SOCKET                 /* Socket#recvfrom */
 };
 
-VALUE rsock_s_recvfrom_nonblock(VALUE sock, int argc, VALUE *argv, enum sock_recv_type from);
+VALUE rsock_s_recvfrom_nonblock(VALUE sock, VALUE len, VALUE flg, VALUE str,
+			        VALUE ex, enum sock_recv_type from);
 VALUE rsock_s_recvfrom(VALUE sock, int argc, VALUE *argv, enum sock_recv_type from);
 
 int rsock_connect(int fd, const struct sockaddr *sockaddr, int len, int socks);
 
 VALUE rsock_s_accept(VALUE klass, int fd, struct sockaddr *sockaddr, socklen_t *len);
-VALUE rsock_s_accept_nonblock(int argc, VALUE *argv, VALUE klass, rb_io_t *fptr, struct sockaddr *sockaddr, socklen_t *len);
+VALUE rsock_s_accept_nonblock(VALUE klass, VALUE ex, rb_io_t *fptr,
+			      struct sockaddr *sockaddr, socklen_t *len);
 VALUE rsock_sock_listen(VALUE sock, VALUE log);
 
 VALUE rsock_sockopt_new(int family, int level, int optname, VALUE data);
 
 #if defined(HAVE_SENDMSG)
-VALUE rsock_bsock_sendmsg(int argc, VALUE *argv, VALUE sock);
-VALUE rsock_bsock_sendmsg_nonblock(int argc, VALUE *argv, VALUE sock);
+VALUE rsock_bsock_sendmsg(VALUE sock, VALUE data, VALUE flags,
+			  VALUE dest_sockaddr, VALUE controls);
+VALUE rsock_bsock_sendmsg_nonblock(VALUE sock, VALUE data, VALUE flags,
+			     VALUE dest_sockaddr, VALUE controls, VALUE ex);
 #else
 #define rsock_bsock_sendmsg rb_f_notimplement
 #define rsock_bsock_sendmsg_nonblock rb_f_notimplement
 #endif
 
 #if defined(HAVE_RECVMSG)
-VALUE rsock_bsock_recvmsg(int argc, VALUE *argv, VALUE sock);
-VALUE rsock_bsock_recvmsg_nonblock(int argc, VALUE *argv, VALUE sock);
+VALUE rsock_bsock_recvmsg(VALUE sock, VALUE dlen, VALUE clen, VALUE flags,
+			  VALUE scm_rights);
+VALUE rsock_bsock_recvmsg_nonblock(VALUE sock, VALUE dlen, VALUE clen,
+				   VALUE flags, VALUE scm_rights, VALUE ex);
 ssize_t rsock_recvmsg(int socket, struct msghdr *message, int flags);
 #else
 #define rsock_bsock_recvmsg rb_f_notimplement
@@ -433,12 +430,15 @@ static inline void rsock_maybe_wait_fd(int fd) { }
 #  define MSG_DONTWAIT_RELIABLE 0
 #endif
 
-static inline int
-rsock_opt_false_p(VALUE opt, VALUE sym)
-{
-    if (!NIL_P(opt) && Qfalse == rb_hash_lookup2(opt, sym, Qundef))
-	return 1;
-    return 0;
-}
+VALUE rsock_read_nonblock(VALUE sock, VALUE length, VALUE buf, VALUE ex);
+VALUE rsock_write_nonblock(VALUE sock, VALUE buf, VALUE ex);
+
+#if !defined HAVE_INET_NTOP && ! defined _WIN32
+const char *inet_ntop(int, const void *, char *, size_t);
+#elif defined __MINGW32__
+# define inet_ntop(f,a,n,l)      rb_w32_inet_ntop(f,a,n,l)
+#elif defined _MSC_VER && RUBY_MSVCRT_VERSION < 90
+const char *WSAAPI inet_ntop(int, const void *, char *, size_t);
+#endif
 
 #endif

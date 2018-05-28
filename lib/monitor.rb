@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 # = monitor.rb
 #
 # Copyright (C) 2001  Shugo Maeda <shugo@ruby-lang.org>
@@ -5,8 +6,6 @@
 # This library is distributed under the terms of the Ruby license.
 # You can freely distribute/modify this library.
 #
-
-require 'thread'
 
 #
 # In concurrent programming, a monitor is an object or module intended to be
@@ -152,7 +151,7 @@ module MonitorMixin
 
     def initialize(monitor)
       @monitor = monitor
-      @cond = ::ConditionVariable.new
+      @cond = Thread::ConditionVariable.new
     end
   end
 
@@ -203,6 +202,20 @@ module MonitorMixin
   end
 
   #
+  # Returns true if this monitor is locked by any thread
+  #
+  def mon_locked?
+    @mon_mutex.locked?
+  end
+
+  #
+  # Returns true if this monitor is locked by current thread.
+  #
+  def mon_owned?
+    @mon_mutex.locked? && @mon_owner == Thread.current
+  end
+
+  #
   # Enters exclusive section and executes the block.  Leaves the exclusive
   # section automatically when the block exits.  See example under
   # +MonitorMixin+.
@@ -240,7 +253,7 @@ module MonitorMixin
   def mon_initialize
     @mon_owner = nil
     @mon_count = 0
-    @mon_mutex = Mutex.new
+    @mon_mutex = Thread::Mutex.new
   end
 
   def mon_check_owner

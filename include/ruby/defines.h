@@ -22,6 +22,88 @@ extern "C" {
 #include RUBY_EXTCONF_H
 #endif
 
+/* function attributes */
+#ifndef CONSTFUNC
+# define CONSTFUNC(x) x
+#endif
+#ifndef PUREFUNC
+# define PUREFUNC(x) x
+#endif
+#ifndef DEPRECATED
+# define DEPRECATED(x) x
+#endif
+#ifndef DEPRECATED_BY
+# define DEPRECATED_BY(n,x) DEPRECATED(x)
+#endif
+#ifndef DEPRECATED_TYPE
+# define DEPRECATED_TYPE(mesg, decl) decl
+#endif
+#ifndef NOINLINE
+# define NOINLINE(x) x
+#endif
+#ifndef ALWAYS_INLINE
+# define ALWAYS_INLINE(x) x
+#endif
+#ifndef ERRORFUNC
+# define HAVE_ATTRIBUTE_ERRORFUNC 0
+# define ERRORFUNC(mesg, x) x
+#else
+# define HAVE_ATTRIBUTE_ERRORFUNC 1
+#endif
+#ifndef WARNINGFUNC
+# define HAVE_ATTRIBUTE_WARNINGFUNC 0
+# define WARNINGFUNC(mesg, x) x
+#else
+# define HAVE_ATTRIBUTE_WARNINGFUNC 1
+#endif
+
+#ifndef GCC_VERSION_SINCE
+# if defined(__GNUC__) && !defined(__INTEL_COMPILER) && !defined(__clang__)
+#  define GCC_VERSION_SINCE(major, minor, patchlevel) \
+    ((__GNUC__ > (major)) ||  \
+     ((__GNUC__ == (major) && \
+       ((__GNUC_MINOR__ > (minor)) || \
+        (__GNUC_MINOR__ == (minor) && __GNUC_PATCHLEVEL__ >= (patchlevel))))))
+# else
+#  define GCC_VERSION_SINCE(major, minor, patchlevel) 0
+# endif
+#endif
+#ifndef GCC_VERSION_BEFORE
+# if defined(__GNUC__) && !defined(__INTEL_COMPILER) && !defined(__clang__)
+#  define GCC_VERSION_BEFORE(major, minor, patchlevel) \
+    ((__GNUC__ < (major)) ||  \
+     ((__GNUC__ == (major) && \
+       ((__GNUC_MINOR__ < (minor)) || \
+        (__GNUC_MINOR__ == (minor) && __GNUC_PATCHLEVEL__ <= (patchlevel))))))
+# else
+#  define GCC_VERSION_BEFORE(major, minor, patchlevel) 0
+# endif
+#endif
+
+/* likely */
+#if __GNUC__ >= 3
+#define RB_LIKELY(x)   (__builtin_expect(!!(x), 1))
+#define RB_UNLIKELY(x) (__builtin_expect(!!(x), 0))
+#else /* __GNUC__ >= 3 */
+#define RB_LIKELY(x)   (x)
+#define RB_UNLIKELY(x) (x)
+#endif /* __GNUC__ >= 3 */
+
+#ifdef __GNUC__
+#define PRINTF_ARGS(decl, string_index, first_to_check) \
+  decl __attribute__((format(printf, string_index, first_to_check)))
+#else
+#define PRINTF_ARGS(decl, string_index, first_to_check) decl
+#endif
+
+#ifdef __GNUC__
+#define RB_GNUC_EXTENSION __extension__
+#define RB_GNUC_EXTENSION_BLOCK(x) __extension__ ({ x; })
+#else
+#define RB_GNUC_EXTENSION
+#define RB_GNUC_EXTENSION_BLOCK(x) (x)
+#endif
+
 /* AC_INCLUDES_DEFAULT */
 #include <stdio.h>
 #ifdef HAVE_SYS_TYPES_H
@@ -53,6 +135,9 @@ extern "C" {
 #ifdef HAVE_STDINT_H
 # include <stdint.h>
 #endif
+#ifdef HAVE_STDALIGN_H
+# include <stdalign.h>
+#endif
 #ifdef HAVE_UNISTD_H
 # include <unistd.h>
 #endif
@@ -61,7 +146,7 @@ extern "C" {
 # include <sys/select.h>
 #endif
 
-#if defined HAVE_SETJMPEX_H && defined HAVE__SETJMPEX
+#ifdef RUBY_USE_SETJMPEX
 #include <setjmpex.h>
 #endif
 
@@ -112,8 +197,8 @@ RUBY_SYMBOL_EXPORT_BEGIN
 #define xrealloc2 ruby_xrealloc2
 #define xfree ruby_xfree
 
-#if defined(__GNUC__) && (__GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 3))
-# define RUBY_ATTR_ALLOC_SIZE(params) __attribute__ ((__alloc_size__ params))
+#if GCC_VERSION_SINCE(4,3,0)
+# define RUBY_ATTR_ALLOC_SIZE(params) __attribute__ ((alloc_size params))
 #else
 # define RUBY_ATTR_ALLOC_SIZE(params)
 #endif
@@ -168,10 +253,6 @@ void xfree(void*);
 #include "ruby/win32.h"
 #endif
 
-#if defined(__BEOS__) && !defined(__HAIKU__) && !defined(BONE)
-#include <net/socket.h> /* intern.h needs fd_set definition */
-#endif
-
 #ifdef RUBY_EXPORT
 #undef RUBY_EXTERN
 
@@ -192,12 +273,27 @@ void xfree(void*);
 #define RUBY_FUNC_EXPORTED
 #endif
 
+/* These macros are used for functions which are exported only for MJIT
+   and NOT ensured to be exported in future versions. */
+#define MJIT_FUNC_EXPORTED RUBY_FUNC_EXPORTED
+#define MJIT_SYMBOL_EXPORT_BEGIN RUBY_SYMBOL_EXPORT_BEGIN
+#define MJIT_SYMBOL_EXPORT_END RUBY_SYMBOL_EXPORT_END
+
 #ifndef RUBY_EXTERN
 #define RUBY_EXTERN extern
 #endif
 
 #ifndef EXTERN
-#define EXTERN RUBY_EXTERN	/* deprecated */
+# if defined __GNUC__
+#   define EXTERN _Pragma("message \"EXTERN is deprecated, use RUBY_EXTERN instead\""); \
+    RUBY_EXTERN
+# elif defined _MSC_VER
+#   define EXTERN __pragma(message(__FILE__"("STRINGIZE(__LINE__)"): warning: "\
+				   "EXTERN is deprecated, use RUBY_EXTERN instead")); \
+    RUBY_EXTERN
+# else
+#   define EXTERN <-<-"EXTERN is deprecated, use RUBY_EXTERN instead"->->
+# endif
 #endif
 
 #ifndef RUBY_MBCHAR_MAXSIZE
@@ -248,6 +344,9 @@ void rb_ia64_flushrs(void);
 #ifndef FUNC_MINIMIZED
 #define FUNC_MINIMIZED(x) x
 #endif
+#ifndef FUNC_UNOPTIMIZED
+#define FUNC_UNOPTIMIZED(x) x
+#endif
 #ifndef RUBY_ALIAS_FUNCTION_TYPE
 #define RUBY_ALIAS_FUNCTION_TYPE(type, prot, name, args) \
     FUNC_MINIMIZED(type prot) {return (type)name args;}
@@ -280,6 +379,31 @@ void rb_ia64_flushrs(void);
 # else
 #   define PACKED_STRUCT_UNALIGNED(x) x
 # endif
+#endif
+
+#ifndef RUBY_ALIGNAS
+#define RUBY_ALIGNAS(x) /* x */
+#endif
+
+#ifdef RUBY_ALIGNOF
+/* OK, take that definition */
+#elif defined(__cplusplus) && (__cplusplus >= 201103L)
+#define RUBY_ALIGNOF alignof
+#elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
+#define RUBY_ALIGNOF _Alignof
+#else
+#define RUBY_ALIGNOF(type) ((size_t)offsetof(struct { char f1; type f2; }, f2))
+#endif
+
+#define NORETURN_STYLE_NEW 1
+#ifdef NORETURN
+/* OK, take that definition */
+#elif defined(__cplusplus) && (__cplusplus >= 201103L)
+#define NORETURN(x) [[ noreturn ]] x
+#elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
+#define NORETURN(x) _Noreturn x
+#else
+#define NORETURN(x) x
 #endif
 
 RUBY_SYMBOL_EXPORT_END

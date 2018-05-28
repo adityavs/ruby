@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 #
 # httpauth/htpasswd -- Apache compatible htpasswd file
 #
@@ -39,7 +40,7 @@ module WEBrick
         @mtime = Time.at(0)
         @passwd = Hash.new
         @auth_type = BasicAuth
-        open(@path,"a").close unless File::exist?(@path)
+        File.open(@path,"a").close unless File.exist?(@path)
         reload
       end
 
@@ -50,7 +51,7 @@ module WEBrick
         mtime = File::mtime(@path)
         if mtime > @mtime
           @passwd.clear
-          open(@path){|io|
+          File.open(@path){|io|
             while line = io.gets
               line.chomp!
               case line
@@ -83,7 +84,7 @@ module WEBrick
           File::rename(tmp.path, output)
           renamed = true
         ensure
-          tmp.close if !tmp.closed?
+          tmp.close
           File.unlink(tmp.path) if !renamed
         end
       end

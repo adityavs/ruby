@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 require 'rubygems/command'
 require 'rubygems/indexer'
 
@@ -67,7 +68,7 @@ Marshal::MINOR_VERSION constants.  It is used to ensure compatibility.
 
     if not File.exist?(options[:directory]) or
        not File.directory?(options[:directory]) then
-      alert_error "unknown directory name #{directory}."
+      alert_error "unknown directory name #{options[:directory]}."
       terminate_interaction 1
     else
       indexer = Gem::Indexer.new options.delete(:directory), options

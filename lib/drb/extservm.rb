@@ -1,10 +1,10 @@
+# frozen_string_literal: false
 =begin
  external service manager
         Copyright (c) 2000 Masatoshi SEKI
 =end
 
 require 'drb/drb'
-require 'thread'
 require 'monitor'
 
 module DRb
@@ -27,7 +27,7 @@ module DRb
       @cond = new_cond
       @servers = {}
       @waiting = []
-      @queue = Queue.new
+      @queue = Thread::Queue.new
       @thread = invoke_thread
       @uri = nil
     end
@@ -37,7 +37,7 @@ module DRb
       synchronize do
         while true
           server = @servers[name]
-          return server if server && server.alive?
+          return server if server&.alive?
           invoke_service(name)
           @cond.wait
         end

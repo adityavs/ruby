@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 begin
   require_relative 'helper'
 rescue LoadError
@@ -5,8 +6,6 @@ end
 
 module Fiddle
   class TestFunction < Fiddle::TestCase
-    include Test::Unit::Assertions
-
     def setup
       super
       Fiddle.last_error = nil
@@ -61,16 +60,35 @@ module Fiddle
       func = Function.new(@libc['strcpy'], [TYPE_VOIDP, TYPE_VOIDP], TYPE_VOIDP)
 
       assert_nil Fiddle.last_error
-      func.call("000", "123")
+      func.call(+"000", "123")
       refute_nil Fiddle.last_error
     end
 
     def test_strcpy
       f = Function.new(@libc['strcpy'], [TYPE_VOIDP, TYPE_VOIDP], TYPE_VOIDP)
-      buff = "000"
+      buff = +"000"
       str = f.call(buff, "123")
       assert_equal("123", buff)
       assert_equal("123", str.to_s)
+    end
+
+    def test_nogvl_poll
+      begin
+        poll = @libc['poll']
+      rescue Fiddle::DLError
+        skip 'poll(2) not available'
+      end
+      f = Function.new(poll, [TYPE_VOIDP, TYPE_INT, TYPE_INT], TYPE_INT)
+
+      msec = 200
+      t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC, :millisecond)
+      th = Thread.new { f.call(nil, 0, msec) }
+      n1 = f.call(nil, 0, msec)
+      n2 = th.value
+      t1 = Process.clock_gettime(Process::CLOCK_MONOTONIC, :millisecond)
+      assert_in_delta(msec, t1 - t0, 100, 'slept correct amount of time')
+      assert_equal(0, n1, 'poll(2) called correctly main-thread')
+      assert_equal(0, n2, 'poll(2) called correctly in sub-thread')
     end
 
     def test_no_memory_leak

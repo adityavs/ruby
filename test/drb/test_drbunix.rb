@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 require_relative 'drbtest'
 
 begin
@@ -38,6 +39,12 @@ class TestDRbUNIXCore < Test::Unit::TestCase
   end
 
   def test_05_eq
+  end
+
+  def test_bad_uri
+    assert_raise(DRb::DRbBadURI) do
+      DRb::DRbServer.new("badfile\n""drbunix:")
+    end
   end
 end
 

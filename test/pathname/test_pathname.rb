@@ -1,5 +1,4 @@
-#
-# -*- frozen_string_literal: true -*-
+# frozen_string_literal: true
 
 require 'test/unit'
 require 'pathname'
@@ -15,8 +14,8 @@ class TestPathname < Test::Unit::TestCase
   end
 
   def self.get_linenum
-    if /:(\d+):/ =~ caller[1]
-      $1.to_i
+    if loc = caller_locations(2, 1)
+      loc[0].lineno
     else
       nil
     end
@@ -221,6 +220,8 @@ class TestPathname < Test::Unit::TestCase
   defassert(:plus, '../../c', '..', '../c')
 
   defassert(:plus, 'a//b/d//e', 'a//b/c', '../d//e')
+
+  defassert(:plus, '//foo/var/bar', '//foo/var', 'bar')
 
   def test_slash
     assert_kind_of(Pathname, Pathname("a") / Pathname("b"))
@@ -543,7 +544,7 @@ class TestPathname < Test::Unit::TestCase
   defassert(:pathsubext, 'lex.yy.o', 'lex.yy.c', '.o')
   defassert(:pathsubext, 'fooaa.o', 'fooaa', '.o')
   defassert(:pathsubext, 'd.e/aa.o', 'd.e/aa', '.o')
-  defassert(:pathsubext, 'long_enough.bug-3664', 'long_enough.not_to_be_embeded[ruby-core:31640]', '.bug-3664')
+  defassert(:pathsubext, 'long_enough.bug-3664', 'long_enough.not_to_be_embedded[ruby-core:31640]', '.bug-3664')
 
   def test_sub_matchdata
     result = Pathname("abc.gif").sub(/\..*/) {
@@ -634,7 +635,7 @@ class TestPathname < Test::Unit::TestCase
     obj = Pathname.new("a")
     obj.freeze
     assert_equal(false, obj.tainted?)
-    assert_raise(RuntimeError) { obj.taint }
+    assert_raise(FrozenError) { obj.taint }
 
     obj = Pathname.new("a")
     obj.taint
@@ -911,11 +912,11 @@ class TestPathname < Test::Unit::TestCase
       }
 
       Pathname("b").open("w", 0444) {|f| f.write "def" }
-      assert_equal(0444, File.stat("b").mode & 0777)
+      assert_equal(0444 & ~File.umask, File.stat("b").mode & 0777)
       assert_equal("def", File.read("b"))
 
       Pathname("c").open("w", 0444, {}) {|f| f.write "ghi" }
-      assert_equal(0444, File.stat("c").mode & 0777)
+      assert_equal(0444 & ~File.umask, File.stat("c").mode & 0777)
       assert_equal("ghi", File.read("c"))
 
       g = path.open
@@ -1213,6 +1214,20 @@ class TestPathname < Test::Unit::TestCase
     }
   end
 
+  def test_empty?
+    with_tmpchdir('rubytest-pathname') {|dir|
+      open("nonemptyfile", "w") {|f| f.write "abc" }
+      open("emptyfile", "w") {|f| }
+      Dir.mkdir("nonemptydir")
+      open("nonemptydir/somefile", "w") {|f| }
+      Dir.mkdir("emptydir")
+      assert_equal(true, Pathname("emptyfile").empty?)
+      assert_equal(false, Pathname("nonemptyfile").empty?)
+      assert_equal(true, Pathname("emptydir").empty?)
+      assert_equal(false, Pathname("nonemptydir").empty?)
+    }
+  end
+
   def test_s_glob
     with_tmpchdir('rubytest-pathname') {|dir|
       open("f", "w") {|f| f.write "abc" }
@@ -1233,6 +1248,19 @@ class TestPathname < Test::Unit::TestCase
   def test_s_pwd
     wd = Pathname.pwd
     assert_kind_of(Pathname, wd)
+  end
+
+  def test_glob
+    with_tmpchdir('rubytest-pathname') {|dir|
+      Dir.mkdir("d")
+      open("d/f", "w") {|f| f.write "abc" }
+      Dir.mkdir("d/e")
+      assert_equal([Pathname("d/e"), Pathname("d/f")], Pathname("d").glob("*").sort)
+      a = []
+      Pathname("d").glob("*") {|path| a << path }
+      a.sort!
+      assert_equal([Pathname("d/e"), Pathname("d/f")], a)
+    }
   end
 
   def test_entries
@@ -1308,6 +1336,7 @@ class TestPathname < Test::Unit::TestCase
         assert_equal([Pathname("d"), Pathname("d/x")], a)
 
         skip "no meaning test on Windows" if /mswin|mingw/ =~ RUBY_PLATFORM
+        skip 'skipped in root privilege' if Process.uid == 0
         a = [];
         assert_raise_with_message(Errno::EACCES, %r{d/x}) do
           Pathname(".").find(ignore_error: false) {|v| a << v }
@@ -1383,6 +1412,8 @@ class TestPathname < Test::Unit::TestCase
       $SAFE = 1
       assert_equal("foo/bar", File.join(Pathname.new("foo"), Pathname.new("bar").taint))
     }.call
+  ensure
+    $SAFE = 0
   end
 
   def test_relative_path_from_casefold

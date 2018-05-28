@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 ##
 # Manages changes of attributes in a block of text
 
@@ -245,7 +246,7 @@ class RDoc::Markup::AttributeManager
   # Processes +str+ converting attributes, HTML and specials
 
   def flow str
-    @str = str
+    @str = str.dup
 
     mask_protected_sequences
 
