@@ -74,7 +74,7 @@ range_modify(VALUE range)
  *     Range.new(begin, end, exclude_end=false)    -> rng
  *
  *  Constructs a range using the given +begin+ and +end+. If the +exclude_end+
- *  parameter is omitted or is <code>false</code>, the +rng+ will include
+ *  parameter is omitted or is <code>false</code>, the range will include
  *  the end object; otherwise, it will be excluded.
  */
 
@@ -388,17 +388,25 @@ range_step(int argc, VALUE *argv, VALUE range)
 {
     VALUE b, e, step, tmp;
 
-    RETURN_SIZED_ENUMERATOR(range, argc, argv, range_step_size);
-
     b = RANGE_BEG(range);
     e = RANGE_END(range);
     if (argc == 0) {
-	step = INT2FIX(1);
+        step = INT2FIX(1);
     }
     else {
-	rb_scan_args(argc, argv, "01", &step);
-	step = check_step_domain(step);
+        rb_scan_args(argc, argv, "01", &step);
     }
+
+    if (!rb_block_given_p()) {
+        if (rb_obj_is_kind_of(b, rb_cNumeric) && (NIL_P(e) || rb_obj_is_kind_of(e, rb_cNumeric))) {
+            return rb_arith_seq_new(range, ID2SYM(rb_frame_this_func()), argc, argv,
+                    range_step_size, b, e, step, EXCL(range));
+        }
+
+        RETURN_SIZED_ENUMERATOR(range, argc, argv, range_step_size);
+    }
+
+    step = check_step_domain(step);
 
     if (FIXNUM_P(b) && NIL_P(e) && FIXNUM_P(step)) {
 	long i = FIX2LONG(b), unit = FIX2LONG(step);
@@ -749,10 +757,36 @@ static VALUE
 range_size(VALUE range)
 {
     VALUE b = RANGE_BEG(range), e = RANGE_END(range);
-    if (rb_obj_is_kind_of(b, rb_cNumeric) && rb_obj_is_kind_of(e, rb_cNumeric)) {
-	return ruby_num_interval_step_size(b, e, INT2FIX(1), EXCL(range));
+    if (rb_obj_is_kind_of(b, rb_cNumeric)) {
+        if (rb_obj_is_kind_of(e, rb_cNumeric)) {
+	    return ruby_num_interval_step_size(b, e, INT2FIX(1), EXCL(range));
+        }
+        if (NIL_P(e)) {
+            return DBL2NUM(HUGE_VAL);
+        }
     }
+
     return Qnil;
+}
+
+/*
+ *  call-seq:
+ *     rng.to_a                   -> array
+ *     rng.entries                -> array
+ *
+ *  Returns an array containing the items in the range.
+ *
+ *    (1..7).to_a  #=> [1, 2, 3, 4, 5, 6, 7]
+ *    (1..).to_a   #=> RangeError: cannot convert endless range to an array
+ */
+
+static VALUE
+range_to_a(VALUE range)
+{
+    if (NIL_P(RANGE_END(range))) {
+	rb_raise(rb_eRangeError, "cannot convert endless range to an array");
+    }
+    return rb_call_super(0, 0);
 }
 
 static VALUE
@@ -987,6 +1021,9 @@ range_first(int argc, VALUE *argv, VALUE range)
 static VALUE
 range_last(int argc, VALUE *argv, VALUE range)
 {
+    if (NIL_P(RANGE_END(range))) {
+        rb_raise(rb_eRangeError, "cannot get the last element of endless range");
+    }
     if (argc == 0) return RANGE_END(range);
     return rb_ary_last(argc, argv, rb_Array(range));
 }
@@ -1014,6 +1051,9 @@ static VALUE
 range_min(int argc, VALUE *argv, VALUE range)
 {
     if (rb_block_given_p()) {
+        if (NIL_P(RANGE_END(range))) {
+            rb_raise(rb_eRangeError, "cannot get the minimum of endless range with custom comparison method");
+        }
 	return rb_call_super(argc, argv);
     }
     else if (argc != 0) {
@@ -1054,7 +1094,9 @@ range_max(int argc, VALUE *argv, VALUE range)
     VALUE e = RANGE_END(range);
     int nm = FIXNUM_P(e) || rb_obj_is_kind_of(e, rb_cNumeric);
 
-    if (NIL_P(e)) return Qnil;
+    if (NIL_P(RANGE_END(range))) {
+	rb_raise(rb_eRangeError, "cannot get the maximum of endless range");
+    }
 
     if (rb_block_given_p() || (EXCL(range) && !nm) || argc) {
         return rb_call_super(argc, argv);
@@ -1459,6 +1501,8 @@ Init_Range(void)
     rb_define_method(rb_cRange, "min", range_min, -1);
     rb_define_method(rb_cRange, "max", range_max, -1);
     rb_define_method(rb_cRange, "size", range_size, 0);
+    rb_define_method(rb_cRange, "to_a", range_to_a, 0);
+    rb_define_method(rb_cRange, "entries", range_to_a, 0);
     rb_define_method(rb_cRange, "to_s", range_to_s, 0);
     rb_define_method(rb_cRange, "inspect", range_inspect, 0);
 

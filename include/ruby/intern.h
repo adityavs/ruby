@@ -203,7 +203,6 @@ VALUE rb_class_protected_instance_methods(int, const VALUE*, VALUE);
 VALUE rb_class_private_instance_methods(int, const VALUE*, VALUE);
 VALUE rb_obj_singleton_methods(int, const VALUE*, VALUE);
 void rb_define_method_id(VALUE, ID, VALUE (*)(ANYARGS), int);
-void rb_frozen_class_p(VALUE);
 void rb_undef(VALUE, ID);
 void rb_define_protected_method(VALUE, const char*, VALUE (*)(ANYARGS), int);
 void rb_define_private_method(VALUE, const char*, VALUE (*)(ANYARGS), int);
@@ -254,7 +253,7 @@ void rb_check_frozen(VALUE);
 void rb_check_trusted(VALUE);
 #define rb_check_frozen_internal(obj) do { \
 	VALUE frozen_obj = (obj); \
-	if (OBJ_FROZEN(frozen_obj)) { \
+	if (RB_UNLIKELY(RB_OBJ_FROZEN(frozen_obj))) { \
 	    rb_error_frozen_object(frozen_obj); \
 	} \
     } while (0)
@@ -335,7 +334,15 @@ void rb_fd_set(int, rb_fdset_t *);
 void rb_w32_fd_copy(rb_fdset_t *, const fd_set *, int);
 #define rb_fd_dup(d, s)	rb_w32_fd_dup((d), (s))
 void rb_w32_fd_dup(rb_fdset_t *dst, const rb_fdset_t *src);
-#define rb_fd_select(n, rfds, wfds, efds, timeout)	rb_w32_select((n), (rfds) ? ((rb_fdset_t*)(rfds))->fdset : NULL, (wfds) ? ((rb_fdset_t*)(wfds))->fdset : NULL, (efds) ? ((rb_fdset_t*)(efds))->fdset: NULL, (timeout))
+static inline int
+rb_fd_select(int n, rb_fdset_t *rfds, rb_fdset_t *wfds, rb_fdset_t *efds, struct timeval *timeout)
+{
+    return rb_w32_select(n,
+                         rfds ? rfds->fdset : NULL,
+                         wfds ? wfds->fdset : NULL,
+                         efds ? efds->fdset : NULL,
+                         timeout);
+}
 #define rb_fd_resize(n, f)	((void)(f))
 
 #define rb_fd_ptr(f)	((f)->fdset)

@@ -11,6 +11,7 @@
 
 #include "ruby/encoding.h"
 #include "ruby/re.h"
+#include "ruby/util.h"
 #include "internal.h"
 #include "encindex.h"
 #include <math.h>
@@ -755,20 +756,33 @@ rb_iseq_translate_threaded_code(rb_iseq_t *iseq)
 }
 
 #if OPT_DIRECT_THREADED_CODE || OPT_CALL_THREADED_CODE
-int
-rb_vm_insn_addr2insn(const void *addr) /* cold path */
-{
-    int insn;
-    const void * const *table = rb_vm_get_insns_address_table();
+static st_table *addr2insn;
 
+void
+rb_addr2insn_init(void)
+{
+    const void * const *table = rb_vm_get_insns_address_table();
+    st_data_t insn;
+
+    addr2insn = st_init_numtable_with_size(VM_INSTRUCTION_SIZE);
     for (insn = 0; insn < VM_INSTRUCTION_SIZE; insn++) {
-	if (table[insn] == addr) {
-	    return insn;
-	}
+        st_add_direct(addr2insn, (st_data_t)table[insn], insn);
     }
+}
+
+int
+rb_vm_insn_addr2insn(const void *addr)
+{
+    st_data_t key = (st_data_t)addr;
+    st_data_t val;
+
+    if (st_lookup(addr2insn, key, &val)) {
+        return (int)val;
+    }
+
     rb_bug("rb_vm_insn_addr2insn: invalid insn address: %p", addr);
 }
-#endif
+#endif /* OPT_DIRECT_THREADED_CODE || OPT_CALL_THREADED_CODE */
 
 VALUE *
 rb_iseq_original_iseq(const rb_iseq_t *iseq) /* cold path */
@@ -2106,17 +2120,8 @@ iseq_set_sequence(rb_iseq_t *iseq, LINK_ANCHOR *const anchor)
 		      case TS_NUM:	/* ulong */
 			generated_iseq[code_index + 1 + j] = FIX2INT(operands[j]);
 			break;
-		      case TS_ISEQ:	/* iseq */
-			{
-			    VALUE v = operands[j];
-			    generated_iseq[code_index + 1 + j] = v;
-			    if (!SPECIAL_CONST_P(v)) {
-				RB_OBJ_WRITTEN(iseq, Qundef, v);
-				FL_SET(iseq, ISEQ_MARKABLE_ISEQ);
-			    }
-			    break;
-			}
 		      case TS_VALUE:	/* VALUE */
+		      case TS_ISEQ:	/* iseq */
 			{
 			    VALUE v = operands[j];
 			    generated_iseq[code_index + 1 + j] = v;
@@ -2127,6 +2132,9 @@ iseq_set_sequence(rb_iseq_t *iseq, LINK_ANCHOR *const anchor)
 			    }
 			    break;
 			}
+		      case TS_ISE: /* inline storage entry */
+			/* Treated as an IC, but may contain a markable VALUE */
+			FL_SET(iseq, ISEQ_MARKABLE_ISEQ);
 		      case TS_IC: /* inline cache */
 			{
 			    unsigned int ic_index = FIX2UINT(operands[j]);
@@ -2135,17 +2143,6 @@ iseq_set_sequence(rb_iseq_t *iseq, LINK_ANCHOR *const anchor)
 				rb_bug("iseq_set_sequence: ic_index overflow: index: %d, size: %d", ic_index, body->is_size);
 			    }
 			    generated_iseq[code_index + 1 + j] = (VALUE)ic;
-			    break;
-			}
-		      case TS_ISE: /* inline storage entry */
-			{
-			    unsigned int ic_index = FIX2UINT(operands[j]);
-			    IC ic = (IC)&body->is_entries[ic_index];
-			    if (UNLIKELY(ic_index >= body->is_size)) {
-				rb_bug("iseq_set_sequence: ic_index overflow: index: %d, size: %d", ic_index, body->is_size);
-			    }
-			    generated_iseq[code_index + 1 + j] = (VALUE)ic;
-			    FL_SET(iseq, ISEQ_MARKABLE_ISEQ);
 			    break;
 			}
 		      case TS_CALLINFO: /* call info */
@@ -2721,6 +2718,8 @@ iseq_peephole_optimize(rb_iseq_t *iseq, LINK_ELEMENT *list, const int do_tailcal
 		  IS_INSN_ID(piobj, branchunless))) {
 	    INSN *pdiobj = (INSN *)get_destination_insn(piobj);
 	    if (niobj == pdiobj) {
+		int refcnt = IS_LABEL(piobj->link.next) ?
+		    ((LABEL *)piobj->link.next)->refcnt : 0;
 		/*
 		 * useless jump elimination (if/unless destination):
 		 *   if   L1
@@ -2738,7 +2737,12 @@ iseq_peephole_optimize(rb_iseq_t *iseq, LINK_ELEMENT *list, const int do_tailcal
 		piobj->insn_id = (IS_INSN_ID(piobj, branchif))
 		  ? BIN(branchunless) : BIN(branchif);
 		replace_destination(piobj, iobj);
-		ELEM_REMOVE(&iobj->link);
+		if (refcnt <= 1) {
+		    ELEM_REMOVE(&iobj->link);
+		}
+		else {
+		    /* TODO: replace other branch destinations too */
+		}
 		return COMPILE_OK;
 	    }
 	    else if (diobj == pdiobj) {
@@ -3975,18 +3979,17 @@ compile_array(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *const node_ro
 			    }
 			}
 			if (kw) {
-			    VALUE nhash = (i > 0 || !first) ? INT2FIX(2) : INT2FIX(1);
 			    if (!popped) {
 				ADD_INSN1(ret, line, putspecialobject, INT2FIX(VM_SPECIAL_OBJECT_VMCORE));
 				if (i > 0 || !first) ADD_INSN(ret, line, swap);
+				else ADD_INSN1(ret, line, newhash, INT2FIX(0));
 			    }
 			    COMPILE(ret, "keyword splat", kw);
 			    if (popped) {
 				ADD_INSN(ret, line, pop);
 			    }
 			    else {
-				ADD_SEND(ret, line, id_core_hash_merge_kwd, nhash);
-				if (nhash == INT2FIX(1)) ADD_SEND(ret, line, rb_intern("dup"), INT2FIX(0));
+				ADD_SEND(ret, line, id_core_hash_merge_kwd, INT2FIX(2));
 			    }
 			}
 			first = 0;
@@ -6621,11 +6624,10 @@ iseq_compile_each0(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *node, in
 	    }
 	}
 
-	/* dummy receiver */
-	ADD_INSN1(ret, line, putobject, type == NODE_ZSUPER ? Qfalse : Qtrue);
+	ADD_INSN(ret, line, putself);
 	ADD_SEQ(ret, args);
 	ADD_INSN3(ret, line, invokesuper,
-		  new_callinfo(iseq, 0, argc, flag | VM_CALL_SUPER | VM_CALL_FCALL, keywords, parent_block != NULL),
+		  new_callinfo(iseq, 0, argc, flag | VM_CALL_SUPER | (type == NODE_ZSUPER ? VM_CALL_ZSUPER : 0) | VM_CALL_FCALL, keywords, parent_block != NULL),
 		  Qnil, /* CALL_CACHE */
 		  parent_block);
 
@@ -7894,11 +7896,14 @@ iseq_build_from_ary_body(rb_iseq_t *iseq, LINK_ANCHOR *const anchor,
 			break;
 		      case TS_VALUE:
 			argv[j] = op;
+			iseq_add_mark_object_compile_time(iseq, op);
 			break;
 		      case TS_ISEQ:
 			{
 			    if (op != Qnil) {
-				argv[j] = (VALUE)iseq_build_load_iseq(iseq, op);
+				VALUE v = (VALUE)iseq_build_load_iseq(iseq, op);
+				argv[j] = v;
+				iseq_add_mark_object_compile_time(iseq, v);
 			    }
 			    else {
 				argv[j] = 0;
@@ -7909,8 +7914,9 @@ iseq_build_from_ary_body(rb_iseq_t *iseq, LINK_ANCHOR *const anchor,
 			op = rb_to_symbol_type(op);
 			argv[j] = (VALUE)rb_global_entry(SYM2ID(op));
 			break;
-		      case TS_IC:
 		      case TS_ISE:
+			FL_SET(iseq, ISEQ_MARKABLE_ISEQ);
+		      case TS_IC:
 			argv[j] = op;
 			if (NUM2UINT(op) >= iseq->body->is_size) {
 			    iseq->body->is_size = NUM2INT(op) + 1;
@@ -7941,6 +7947,7 @@ iseq_build_from_ary_body(rb_iseq_t *iseq, LINK_ANCHOR *const anchor,
 			    }
 			    RB_GC_GUARD(op);
 			    argv[j] = map;
+			    iseq_add_mark_object_compile_time(iseq, map);
 			}
 			break;
 		      case TS_FUNCPTR:
@@ -8635,9 +8642,9 @@ ibf_load_code(const struct ibf_load *load, const rb_iseq_t *iseq, const struct r
 		    }
 		    break;
 		}
-	      case TS_IC:
-		FL_SET(iseq, ISEQ_MARKABLE_ISEQ);
 	      case TS_ISE:
+		FL_SET(iseq, ISEQ_MARKABLE_ISEQ);
+	      case TS_IC:
 		code[code_index] = (VALUE)&is_entries[(int)op];
 		break;
 	      case TS_CALLINFO:

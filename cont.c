@@ -142,14 +142,21 @@ enum fiber_status {
 #define FIBER_RUNNABLE_P(fib)   (FIBER_CREATED_P(fib) || FIBER_SUSPENDED_P(fib))
 
 #if FIBER_USE_NATIVE && !defined(_WIN32)
-static inline void
+static inline int
 fiber_context_create(ucontext_t *context, void (*func)(), void *arg, void *ptr, size_t size)
 {
-    getcontext(context);
+    if (getcontext(context) < 0) return -1;
+    /*
+     * getcontext() may fail by some reasons:
+     *   1. SELinux policy banned one of "rt_sigprocmask",
+     *      "sigprocmask" or "swapcontext";
+     *   2. libseccomp (aka. syscall filter) banned one of them.
+     */
     context->uc_link = NULL;
     context->uc_stack.ss_sp = ptr;
     context->uc_stack.ss_size = size;
     makecontext(context, func, 0);
+    return 0;
 }
 #endif
 
@@ -255,7 +262,17 @@ static inline void
 ec_switch(rb_thread_t *th, rb_fiber_t *fib)
 {
     rb_execution_context_t *ec = &fib->cont.saved_ec;
+
     ruby_current_execution_context_ptr = th->ec = ec;
+
+    /*
+     * timer-thread may set trap interrupt on previous th->ec at any time;
+     * ensure we do not delay (or lose) the trap interrupt handling.
+     */
+    if (th->vm->main_thread == th && rb_signal_buff_size() > 0) {
+        RUBY_VM_SET_TRAP_INTERRUPT(ec);
+    }
+
     VM_ASSERT(ec->fiber_ptr->cont.self == 0 || ec->vm_stack != NULL);
 }
 
@@ -378,7 +395,7 @@ cont_free(void *ptr)
 #endif
     RUBY_FREE_UNLESS_NULL(cont->saved_vm_stack.ptr);
 
-    if (mjit_init_p && cont->mjit_cont != NULL) {
+    if (mjit_enabled && cont->mjit_cont != NULL) {
         mjit_cont_free(cont->mjit_cont);
     }
     /* free rb_cont_t or rb_fiber_t */
@@ -565,7 +582,7 @@ cont_init(rb_context_t *cont, rb_thread_t *th)
     cont->saved_ec.local_storage = NULL;
     cont->saved_ec.local_storage_recursive_hash = Qnil;
     cont->saved_ec.local_storage_recursive_hash_for_trace = Qnil;
-    if (mjit_init_p) {
+    if (mjit_enabled) {
         cont->mjit_cont = mjit_cont_new(&cont->saved_ec);
     }
 }
@@ -611,9 +628,9 @@ show_vm_pcs(const rb_control_frame_t *cfp,
     }
 }
 #endif
+COMPILER_WARNING_PUSH
 #ifdef __clang__
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wduplicate-decl-specifier"
+COMPILER_WARNING_IGNORED(-Wduplicate-decl-specifier)
 #endif
 static VALUE
 cont_capture(volatile int *volatile stat)
@@ -677,9 +694,7 @@ cont_capture(volatile int *volatile stat)
 	return contval;
     }
 }
-#ifdef __clang__
-#pragma clang diagnostic pop
-#endif
+COMPILER_WARNING_POP
 
 static inline void
 fiber_restore_thread(rb_thread_t *th, rb_fiber_t *fib)
@@ -856,7 +871,9 @@ fiber_initialize_machine_stack_context(rb_fiber_t *fib, size_t size)
     ptr = fiber_machine_stack_alloc(size);
     fib->ss_sp = ptr;
     fib->ss_size = size;
-    fiber_context_create(&fib->context, fiber_entry, NULL, fib->ss_sp, fib->ss_size);
+    if (fiber_context_create(&fib->context, fiber_entry, NULL, fib->ss_sp, fib->ss_size)) {
+	rb_raise(rb_eFiberError, "can't get context for creating fiber: %s", ERRNOMSG);
+    }
     sec->machine.stack_start = (VALUE*)(ptr + STACK_DIR_UPPER(0, size));
     sec->machine.stack_maxsize = size - RB_PAGE_SIZE;
 #endif

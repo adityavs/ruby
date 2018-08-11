@@ -1731,11 +1731,15 @@ rb_hash_replace(VALUE hash, VALUE hash2)
  *     hsh.size      ->  integer
  *
  *  Returns the number of key-value pairs in the hash.
+ *  <code>Hash#length</code> and <code>Hash#size</code> are both equivalent to
+ *  each other.
  *
  *     h = { "d" => 100, "a" => 200, "v" => 300, "e" => 400 }
  *     h.length        #=> 4
+ *     h.size          #=> 4
  *     h.delete("a")   #=> 200
  *     h.length        #=> 3
+ *     h.size          #=> 3
  */
 
 VALUE
@@ -3016,6 +3020,7 @@ any_p_i_pattern(VALUE key, VALUE value, VALUE arg)
 /*
  *  call-seq:
  *     hsh.any? [{ |(key, value)| block }]   -> true or false
+ *     hsh.any?(pattern)                     -> true or false
  *
  *  See also Enumerable#any?
  */
@@ -3314,6 +3319,9 @@ env_str_new2(const char *ptr)
 
 static int env_path_tainted(const char *);
 
+static const char TZ_ENV[] = "TZ";
+extern bool ruby_tz_uptodate_p;
+
 static rb_encoding *
 env_encoding_for(const char *name, const char *ptr)
 {
@@ -3394,6 +3402,9 @@ env_delete(VALUE obj, VALUE name)
 	if (ENVMATCH(nam, PATH_ENV)) {
 	    RB_GC_GUARD(name);
 	    path_tainted = 0;
+	}
+	else if (ENVMATCH(nam, TZ_ENV)) {
+	    ruby_tz_uptodate_p = FALSE;
 	}
 	return value;
     }
@@ -3538,10 +3549,33 @@ getenvsize(const WCHAR* p)
     while (*p++) p += lstrlenW(p) + 1;
     return p - porg + 1;
 }
+
 static size_t
 getenvblocksize(void)
 {
+#ifdef _MAX_ENV
+    return _MAX_ENV;
+#else
     return 32767;
+#endif
+}
+
+static int
+check_envsize(size_t n)
+{
+    if (_WIN32_WINNT < 0x0600 && rb_w32_osver() < 6) {
+	/* https://msdn.microsoft.com/en-us/library/windows/desktop/ms682653(v=vs.85).aspx */
+	/* Windows Server 2003 and Windows XP: The maximum size of the
+	 * environment block for the process is 32,767 characters. */
+	WCHAR* p = GetEnvironmentStringsW();
+	if (!p) return -1; /* never happen */
+	n += getenvsize(p);
+	FreeEnvironmentStringsW(p);
+	if (n >= getenvblocksize()) {
+	    return -1;
+	}
+    }
+    return 0;
 }
 #endif
 
@@ -3581,16 +3615,11 @@ ruby_setenv(const char *name, const char *value)
     check_envname(name);
     len = MultiByteToWideChar(CP_UTF8, 0, name, -1, NULL, 0);
     if (value) {
-	WCHAR* p = GetEnvironmentStringsW();
-	size_t n;
 	int len2;
-	if (!p) goto fail; /* never happen */
-	n = lstrlen(name) + 2 + strlen(value) + getenvsize(p);
-	FreeEnvironmentStringsW(p);
-	if (n >= getenvblocksize()) {
+	len2 = MultiByteToWideChar(CP_UTF8, 0, value, -1, NULL, 0);
+	if (check_envsize((size_t)len + len2)) { /* len and len2 include '\0' */
 	    goto fail;  /* 2 for '=' & '\0' */
 	}
-	len2 = MultiByteToWideChar(CP_UTF8, 0, value, -1, NULL, 0);
 	wname = ALLOCV_N(WCHAR, buf, len + len2);
 	wvalue = wname + len;
 	MultiByteToWideChar(CP_UTF8, 0, name, -1, wname, len);
@@ -3753,6 +3782,9 @@ env_aset(VALUE obj, VALUE nm, VALUE val)
 	else {
 	    path_tainted_p(value);
 	}
+    }
+    else if (ENVMATCH(name, TZ_ENV)) {
+	ruby_tz_uptodate_p = FALSE;
     }
     return val;
 }

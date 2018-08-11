@@ -1,11 +1,11 @@
 require_relative '../spec_helper'
 
 describe "Processing RUBYOPT" do
-  before (:each) do
+  before :each do
     @rubyopt, ENV["RUBYOPT"] = ENV["RUBYOPT"], nil
   end
 
-  after (:each) do
+  after :each do
     ENV["RUBYOPT"] = @rubyopt
   end
 
@@ -22,22 +22,16 @@ describe "Processing RUBYOPT" do
     result.should =~ /value of \$DEBUG is true/
   end
 
-  ruby_description =
-    if defined?(RubyVM::MJIT) && RubyVM::MJIT.enabled?
-      # fake.rb always drops +JIT from RUBY_DESCRIPTION. This resurrects that.
-      RUBY_DESCRIPTION.sub(/ \[[^\]]+\]$/, ' +JIT\0')
-    else
-      RUBY_DESCRIPTION
+  guard -> { not CROSS_COMPILING } do
+    it "prints the version number for '-v'" do
+      ENV["RUBYOPT"] = '-v'
+      ruby_exe("")[/\A.*/].should == RUBY_DESCRIPTION
     end
 
-  it "prints the version number for '-v'" do
-    ENV["RUBYOPT"] = '-v'
-    ruby_exe("")[/\A.*/].should == ruby_description
-  end
-
-  it "ignores whitespace around the option" do
-    ENV["RUBYOPT"] = ' -v '
-    ruby_exe("")[/\A.*/].should == ruby_description
+    it "ignores whitespace around the option" do
+      ENV["RUBYOPT"] = ' -v '
+      ruby_exe("")[/\A.*/].should == RUBY_DESCRIPTION
+    end
   end
 
   it "sets $VERBOSE to true for '-w'" do

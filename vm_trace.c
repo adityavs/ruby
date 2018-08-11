@@ -25,6 +25,7 @@
 #include "ruby/debug.h"
 
 #include "vm_core.h"
+#include "mjit.h"
 #include "iseq.h"
 #include "eval_intern.h"
 
@@ -68,6 +69,9 @@ update_global_event_hook(rb_event_flag_t vm_events)
     rb_event_flag_t enabled_iseq_events = ruby_vm_event_enabled_flags & ISEQ_TRACE_EVENTS;
 
     if (new_iseq_events & ~enabled_iseq_events) {
+        /* Stop calling all JIT-ed code. Compiling trace insns is not supported for now. */
+        mjit_call_p = FALSE;
+
 	/* write all ISeqs iff new events are added */
 	rb_iseq_trace_set_all(new_iseq_events | enabled_iseq_events);
     }
@@ -805,6 +809,45 @@ fill_id_and_klass(rb_trace_arg_t *trace_arg)
 }
 
 VALUE
+rb_tracearg_parameters(rb_trace_arg_t *trace_arg)
+{
+    switch(trace_arg->event) {
+      case RUBY_EVENT_CALL:
+      case RUBY_EVENT_RETURN:
+      case RUBY_EVENT_B_CALL:
+      case RUBY_EVENT_B_RETURN: {
+	const rb_control_frame_t *cfp = rb_vm_get_ruby_level_next_cfp(trace_arg->ec, trace_arg->cfp);
+	if (cfp) {
+            int is_proc = 0;
+            if (VM_FRAME_TYPE(cfp) == VM_FRAME_MAGIC_BLOCK && !VM_FRAME_LAMBDA_P(cfp)) {
+                is_proc = 1;
+            }
+	    return rb_iseq_parameters(cfp->iseq, is_proc);
+	}
+	break;
+      }
+      case RUBY_EVENT_C_CALL:
+      case RUBY_EVENT_C_RETURN: {
+	fill_id_and_klass(trace_arg);
+	if (trace_arg->klass && trace_arg->id) {
+	    const rb_method_entry_t *me;
+	    VALUE iclass = Qnil;
+	    me = rb_method_entry_without_refinements(trace_arg->klass, trace_arg->id, &iclass);
+	    return rb_unnamed_parameters(rb_method_entry_arity(me));
+	}
+	break;
+      }
+      case RUBY_EVENT_RAISE:
+      case RUBY_EVENT_LINE:
+      case RUBY_EVENT_CLASS:
+      case RUBY_EVENT_END:
+	rb_raise(rb_eRuntimeError, "not supported by this event");
+	break;
+    }
+    return Qnil;
+}
+
+VALUE
 rb_tracearg_method_id(rb_trace_arg_t *trace_arg)
 {
     fill_id_and_klass(trace_arg);
@@ -917,6 +960,15 @@ static VALUE
 tracepoint_attr_path(VALUE tpval)
 {
     return rb_tracearg_path(get_trace_arg());
+}
+
+/*
+ * Return the parameters of the method or block that the current hook belongs to
+ */
+static VALUE
+tracepoint_attr_parameters(VALUE tpval)
+{
+    return rb_tracearg_parameters(get_trace_arg());
 }
 
 /*
@@ -1502,6 +1554,7 @@ Init_vm_trace(void)
     rb_define_method(rb_cTracePoint, "event", tracepoint_attr_event, 0);
     rb_define_method(rb_cTracePoint, "lineno", tracepoint_attr_lineno, 0);
     rb_define_method(rb_cTracePoint, "path", tracepoint_attr_path, 0);
+    rb_define_method(rb_cTracePoint, "parameters", tracepoint_attr_parameters, 0);
     rb_define_method(rb_cTracePoint, "method_id", tracepoint_attr_method_id, 0);
     rb_define_method(rb_cTracePoint, "callee_id", tracepoint_attr_callee_id, 0);
     rb_define_method(rb_cTracePoint, "defined_class", tracepoint_attr_defined_class, 0);

@@ -81,7 +81,13 @@ with all sufficient information, see the ChangeLog file or Redmine
     * Hash#filter is a new alias for Hash#select [Feature #13784]
     * Hash#filter! is a new alias for Hash#select! [Feature #13784]
 
+* IO
+
+  * new mode character 'x' to open files for exclusive access [Feature #11258]
+
 * Kernel
+
+  * Kernel#then is a new alias for Kernel#yield_self [Feature #14594]
 
   * Kernel.#Complex takes :exception option to specify the way of error handling  [Feature #12732]
 
@@ -120,9 +126,20 @@ with all sufficient information, see the ChangeLog file or Redmine
 
   * Range#=== now uses #cover? instead of #include? method. [Feature #14575]
 
+* RubyVM::AST
+
+  * RubyVM::AST.parse parses a given string and returns AST nodes. [experimental]
+  * RubyVM::AST.parse_file parses a given file and returns AST nodes. [experimental]
+
 * String
 
   * String#split yields each substring to the block if given. [Feature #4780]
+
+* TracePoint
+
+  * New methods:
+
+    * TracePoint#parameters [Feature #14694]
 
 === Stdlib updates (outstanding ones only)
 
@@ -144,6 +161,20 @@ with all sufficient information, see the ChangeLog file or Redmine
   * New method:
 
     * Matrix#antisymmetric?
+
+* Net
+
+  * New method:
+
+    * Add write_timeout keyword argument to Net::BufferedIO.new. [Feature #13396]
+
+    * Add Net::BufferedIO#write_timeout, Net::BufferedIO#write_timeout=,
+      Net::HTTP#write_timeout, and Net::HTTP#write_timeout=. [Feature #13396]
+
+  * New constant:
+
+    * Add Net::HTTPClientException to deprecate Net::HTTPServerException,
+      whose name is misleading. [Bug #14688]
 
 * REXML
 
@@ -233,6 +264,9 @@ with all sufficient information, see the ChangeLog file or Redmine
     Rails application slower for now.
 
 * VM generator script renewal; makes the generated VM more optimized. [GH-1779]
+
+* Thread cache enabled for pthreads platforms
+  (for `Thread.new` and `Thread.start`) [Feature #14757]
 
 === Miscellaneous changes
 

@@ -707,7 +707,7 @@ class TestRubyOptimization < Test::Unit::TestCase
   end
 
   def test_clear_unreachable_keyword_args
-    assert_separately [], <<-END, timeout: 20
+    assert_separately [], <<-END, timeout: 30
       script =  <<-EOS
         if true
         else
@@ -770,5 +770,18 @@ class TestRubyOptimization < Test::Unit::TestCase
     begin;
       tap {true || tap {}}
     end;
+  end
+
+  def test_jump_elimination_with_optimized_out_block
+    x = Object.new
+    def x.bug(obj)
+      if obj || obj
+        obj = obj
+      else
+        raise "[ruby-core:87830] [Bug #14897]"
+      end
+      obj
+    end
+    assert_equal(:ok, x.bug(:ok))
   end
 end

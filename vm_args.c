@@ -19,10 +19,10 @@ struct args_info {
     /* basic args info */
     VALUE *argv;
     int argc;
-    const struct rb_call_info_kw_arg *kw_arg;
 
     /* additional args info */
     int rest_index;
+    const struct rb_call_info_kw_arg *kw_arg;
     VALUE *kw_argv;
     VALUE rest;
 };
@@ -671,8 +671,15 @@ setup_parameters_complex(rb_execution_context_t * const ec, const rb_iseq_t * co
 	argument_kw_error(ec, iseq, "unknown", rb_hash_keys(keyword_hash));
     }
     else if (kw_splat && NIL_P(keyword_hash)) {
-	rb_warning("passing splat keyword arguments as a single Hash"
-		   " to `% "PRIsVALUE"'", rb_id2str(ci->mid));
+	if (RTEST(ruby_verbose)) {
+	    VALUE path = rb_iseq_path(iseq);
+	    VALUE line = rb_iseq_first_lineno(iseq);
+	    VALUE label = rb_iseq_label(iseq);
+	    rb_compile_warning(NIL_P(path) ? NULL : RSTRING_PTR(path), FIX2INT(line),
+			       "in `%s': the last argument was passed as a single Hash",
+			       NIL_P(label) ? NULL : RSTRING_PTR(label));
+	    rb_warning("although a splat keyword arguments here");
+	}
     }
 
     if (iseq->body->param.flags.has_block) {
@@ -803,7 +810,7 @@ vm_to_proc(VALUE proc)
 	    rb_callable_method_entry_with_refinements(CLASS_OF(proc), idTo_proc, NULL);
 
 	if (me) {
-	    b = vm_call0(GET_EC(), proc, idTo_proc, 0, NULL, me);
+            b = rb_vm_call0(GET_EC(), proc, idTo_proc, 0, NULL, me);
 	}
 	else {
 	    /* NOTE: calling method_missing */
@@ -843,22 +850,22 @@ refine_sym_proc_call(RB_BLOCK_CALL_FUNC_ARGLIST(yielded_arg, callback_arg))
     if (!me) {
 	return method_missing(obj, mid, argc, argv, MISSING_NOENTRY);
     }
-    return vm_call0(ec, obj, mid, argc, argv, me);
+    return rb_vm_call0(ec, obj, mid, argc, argv, me);
 }
 
-static void
+static VALUE
 vm_caller_setup_arg_block(const rb_execution_context_t *ec, rb_control_frame_t *reg_cfp,
-			  struct rb_calling_info *calling, const struct rb_call_info *ci, rb_iseq_t *blockiseq, const int is_super)
+                          const struct rb_call_info *ci, rb_iseq_t *blockiseq, const int is_super)
 {
     if (ci->flag & VM_CALL_ARGS_BLOCKARG) {
 	VALUE block_code = *(--reg_cfp->sp);
 
 	if (NIL_P(block_code)) {
-	    calling->block_handler = VM_BLOCK_HANDLER_NONE;
-	}
+            return VM_BLOCK_HANDLER_NONE;
+        }
 	else if (block_code == rb_block_param_proxy) {
-	    calling->block_handler = VM_CF_BLOCK_HANDLER(reg_cfp);
-	}
+            return VM_CF_BLOCK_HANDLER(reg_cfp);
+        }
 	else if (SYMBOL_P(block_code) && rb_method_basic_definition_p(rb_cSymbol, idTo_proc)) {
 	    const rb_cref_t *cref = vm_env_cref(reg_cfp->ep);
 	    if (cref && !NIL_P(cref->refinements)) {
@@ -871,23 +878,23 @@ vm_caller_setup_arg_block(const rb_execution_context_t *ec, rb_control_frame_t *
 		}
 		block_code = func;
 	    }
-	    calling->block_handler = block_code;
-	}
-	else {
-	    calling->block_handler = vm_to_proc(block_code);
-	}
+            return block_code;
+        }
+        else {
+            return vm_to_proc(block_code);
+        }
     }
     else if (blockiseq != NULL) { /* likely */
 	struct rb_captured_block *captured = VM_CFP_TO_CAPTURED_BLOCK(reg_cfp);
 	captured->code.iseq = blockiseq;
-	calling->block_handler = VM_BH_FROM_ISEQ_BLOCK(captured);
+        return VM_BH_FROM_ISEQ_BLOCK(captured);
     }
     else {
 	if (is_super) {
-	    calling->block_handler = GET_BLOCK_HANDLER();
-	}
-	else {
-	    calling->block_handler = VM_BLOCK_HANDLER_NONE;
-	}
+            return GET_BLOCK_HANDLER();
+        }
+        else {
+            return VM_BLOCK_HANDLER_NONE;
+        }
     }
 }

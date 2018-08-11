@@ -371,7 +371,7 @@ rb_warn_m(int argc, VALUE *argv, VALUE exc)
 		args[0] = LONG2NUM(lev + 1);
 		args[1] = INT2FIX(1);
 		location = rb_vm_thread_backtrace_locations(2, args, GET_THREAD()->self);
-		if (!NIL_P(uplevel)) {
+		if (!NIL_P(location)) {
 		    location = rb_ary_entry(location, 0);
 		}
 	    }
@@ -1061,7 +1061,7 @@ exc_full_message(int argc, VALUE *argv, VALUE exc)
 	    if (id == id_bottom) args[kw_order] = Qtrue;
 	    else if (id == id_top) args[kw_order] = Qfalse;
 	    else {
-		rb_raise(rb_eArgError, "expected :top or :down as "
+		rb_raise(rb_eArgError, "expected :top or :bottom as "
 			 "order: %+"PRIsVALUE, args[kw_order]);
 	    }
 	}
@@ -1446,9 +1446,10 @@ name_err_init_attr(VALUE exc, VALUE recv, VALUE method)
 /*
  * call-seq:
  *   NameError.new(msg [, name])  -> name_error
+ *   NameError.new(msg [, name], receiver:)  -> name_error
  *
  * Construct a new NameError exception. If given the <i>name</i>
- * parameter may subsequently be examined using the <code>NameError.name</code>
+ * parameter may subsequently be examined using the <code>NameError#name</code>
  * method.
  */
 

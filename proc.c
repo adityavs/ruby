@@ -1148,8 +1148,8 @@ rb_proc_location(VALUE self)
     return iseq_location(rb_proc_get_iseq(self, 0));
 }
 
-static VALUE
-unnamed_parameters(int arity)
+VALUE
+rb_unnamed_parameters(int arity)
 {
     VALUE a, param = rb_ary_new2((arity < 0) ? -arity : arity);
     int n = (arity < 0) ? ~arity : arity;
@@ -1183,7 +1183,7 @@ rb_proc_parameters(VALUE self)
     int is_proc;
     const rb_iseq_t *iseq = rb_proc_get_iseq(self, &is_proc);
     if (!iseq) {
-	return unnamed_parameters(rb_proc_arity(self));
+	return rb_unnamed_parameters(rb_proc_arity(self));
     }
     return rb_iseq_parameters(iseq, is_proc);
 }
@@ -1853,16 +1853,14 @@ rb_mod_public_instance_method(VALUE mod, VALUE vid)
  *  Defines an instance method in the receiver. The _method_
  *  parameter can be a +Proc+, a +Method+ or an +UnboundMethod+ object.
  *  If a block is specified, it is used as the method body. This block
- *  is evaluated using <code>instance_eval</code>, a point that is
- *  tricky to demonstrate because <code>define_method</code> is private.
- *  (This is why we resort to the +send+ hack in this example.)
+ *  is evaluated using <code>instance_eval</code>.
  *
  *     class A
  *       def fred
  *         puts "In Fred"
  *       end
  *       def create_method(name, &block)
- *         self.class.send(:define_method, name, &block)
+ *         self.class.define_method(name, &block)
  *       end
  *       define_method(:wilma) { puts "Charge it!" }
  *     end
@@ -2336,7 +2334,7 @@ rb_method_entry_min_max_arity(const rb_method_entry_t *me, int *max)
 	return 0;
     }
     rb_bug("rb_method_entry_min_max_arity: invalid method entry type (%d)", def->type);
-    UNREACHABLE;
+    UNREACHABLE_RETURN(Qnil);
 }
 
 int
@@ -2567,7 +2565,7 @@ rb_method_parameters(VALUE method)
 {
     const rb_iseq_t *iseq = rb_method_iseq(method);
     if (!iseq) {
-	return unnamed_parameters(method_arity(method));
+	return rb_unnamed_parameters(method_arity(method));
     }
     return rb_iseq_parameters(iseq, 0);
 }

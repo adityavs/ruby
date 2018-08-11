@@ -458,6 +458,19 @@ describe "Module#private_constant marked constants" do
     lambda {mod::Foo}.should raise_error(NameError)
   end
 
+  ruby_version_is "2.6" do
+    it "sends #const_missing to the original class or module" do
+      mod = Module.new
+      mod.const_set :Foo, true
+      mod.send :private_constant, :Foo
+      def mod.const_missing(name)
+        name == :Foo ? name : super
+      end
+
+      mod::Foo.should == :Foo
+    end
+  end
+
   describe "in a module" do
     it "cannot be accessed from outside the module" do
       lambda do
@@ -611,6 +624,42 @@ describe "Module#private_constant marked constants" do
 
     it "is defined? through the normal search" do
       defined?(PRIVATE_CONSTANT_IN_OBJECT).should == "constant"
+    end
+  end
+
+  describe "NameError by #private_constant" do
+    it "has :receiver and :name attributes" do
+      lambda do
+        ConstantVisibility::PrivConstClass::PRIVATE_CONSTANT_CLASS
+      end.should raise_error(NameError) {|e|
+        e.receiver.should == ConstantVisibility::PrivConstClass
+        e.name.should == :PRIVATE_CONSTANT_CLASS
+      }
+
+      lambda do
+        ConstantVisibility::PrivConstModule::PRIVATE_CONSTANT_MODULE
+      end.should raise_error(NameError) {|e|
+        e.receiver.should == ConstantVisibility::PrivConstModule
+        e.name.should == :PRIVATE_CONSTANT_MODULE
+      }
+    end
+
+    it "has the defined class as the :name attribute" do
+      lambda do
+        ConstantVisibility::PrivConstClassChild::PRIVATE_CONSTANT_CLASS
+      end.should raise_error(NameError) {|e|
+        e.receiver.should == ConstantVisibility::PrivConstClass
+        e.name.should == :PRIVATE_CONSTANT_CLASS
+      }
+
+      lambda do
+        ConstantVisibility::PrivConstModuleChild::PRIVATE_CONSTANT_MODULE
+      end.should raise_error(NameError) {|e|
+        ruby_bug "#14853", ""..."2.5.2" do
+          e.receiver.should == ConstantVisibility::PrivConstModule
+        end
+        e.name.should == :PRIVATE_CONSTANT_MODULE
+      }
     end
   end
 end

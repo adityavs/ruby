@@ -272,15 +272,11 @@ rb_mutex_lock(VALUE self)
 	    list_add_tail(&mutex->waitq, &w.node);
 	    native_sleep(th, timeout); /* release GVL */
 	    list_del(&w.node);
-	    if (!mutex->th) {
-		mutex->th = th;
-	    }
-
 	    if (patrol_thread == th)
 		patrol_thread = NULL;
 
 	    th->locking_mutex = Qfalse;
-	    if (mutex->th && timeout && !RUBY_VM_INTERRUPTED(th->ec)) {
+	    if (timeout && !RUBY_VM_INTERRUPTED(th->ec)) {
 		rb_check_deadlock(th->vm);
 	    }
 	    if (th->status == THREAD_STOPPED_FOREVER) {
@@ -288,9 +284,11 @@ rb_mutex_lock(VALUE self)
 	    }
 	    th->vm->sleeper--;
 
-	    if (mutex->th == th) mutex_locked(th, self);
-
-	    RUBY_VM_CHECK_INTS_BLOCKING(th->ec);
+	    RUBY_VM_CHECK_INTS_BLOCKING(th->ec); /* may release mutex */
+	    if (!mutex->th) {
+		mutex->th = th;
+	        mutex_locked(th, self);
+	    }
 	}
     }
     return self;
@@ -738,6 +736,8 @@ queue_closed_result(VALUE self, struct rb_queue *q)
  *	     puts "consumed #{value}"
  *	  end
  *	end
+ *
+ *	consumer.join
  *
  */
 
@@ -1425,7 +1425,7 @@ static VALUE
 undumpable(VALUE obj)
 {
     rb_raise(rb_eTypeError, "can't dump %"PRIsVALUE, rb_obj_class(obj));
-    UNREACHABLE;
+    UNREACHABLE_RETURN(Qnil);
 }
 
 static VALUE

@@ -6,6 +6,10 @@
 
 **********************************************************************/
 
+/* NOTE: All functions in this file are executed on MJIT worker. So don't
+   call Ruby methods (C functions that may call rb_funcall) or trigger
+   GC (using ZALLOC, xmalloc, xfree, etc.) in this file. */
+
 #include "internal.h"
 #include "vm_core.h"
 #include "vm_exec.h"
@@ -47,6 +51,7 @@ struct case_dispatch_var {
 static int
 has_valid_method_type(CALL_CACHE cc)
 {
+    extern int mjit_valid_class_serial_p(rb_serial_t class_serial);
     return GET_GLOBAL_METHOD_STATE() == cc->method_state
         && mjit_valid_class_serial_p(cc->class_serial) && cc->me;
 }
@@ -58,7 +63,7 @@ inlinable_iseq_p(CALL_INFO ci, CALL_CACHE cc, const rb_iseq_t *iseq)
 {
     extern int rb_simple_iseq_p(const rb_iseq_t *iseq);
     return iseq != NULL
-        && rb_simple_iseq_p(iseq) && !(ci->flag & VM_CALL_KW_SPLAT) /* top of vm_callee_setup_arg */
+        && rb_simple_iseq_p(iseq) && !(ci->flag & VM_CALL_KW_SPLAT) /* Top of vm_callee_setup_arg. In this case, opt_pc is 0. */
         && (!IS_ARGS_SPLAT(ci) && !IS_ARGS_KEYWORD(ci) && !(METHOD_ENTRY_VISI(cc->me) == METHOD_VISI_PROTECTED)); /* CI_SET_FASTPATH */
 }
 
@@ -192,7 +197,9 @@ mjit_compile(FILE *f, const struct rb_iseq_constant_body *body, const char *func
     struct compile_status status;
     status.success = TRUE;
     status.local_stack_p = !body->catch_except_p;
-    status.stack_size_for_pos = ALLOC_N(int, body->iseq_size);
+    status.stack_size_for_pos = (int *)malloc(sizeof(int) * body->iseq_size);
+    if (status.stack_size_for_pos == NULL)
+        return FALSE;
     memset(status.stack_size_for_pos, NOT_COMPILED_STACK_SIZE, sizeof(int) * body->iseq_size);
 
     /* For performance, we verify stack size only on compilation time (mjit_compile.inc.erb) without --jit-debug */
@@ -214,7 +221,8 @@ mjit_compile(FILE *f, const struct rb_iseq_constant_body *body, const char *func
     fprintf(f, "    static const VALUE *const original_body_iseq = (VALUE *)0x%"PRIxVALUE";\n",
             (VALUE)body->iseq_encoded);
 
-    /* Simulate `opt_pc` in setup_parameters_complex */
+    /* Simulate `opt_pc` in setup_parameters_complex. Other PCs which may be passed by catch tables
+       are not considered since vm_exec doesn't call mjit_exec for catch tables. */
     if (body->param.flags.has_opt) {
         int i;
         fprintf(f, "\n");
@@ -227,15 +235,10 @@ mjit_compile(FILE *f, const struct rb_iseq_constant_body *body, const char *func
         fprintf(f, "    }\n");
     }
 
-    /* ISeq might be used for catch table too. For that usage, this code cancels JIT execution. */
-    fprintf(f, "    if (reg_cfp->pc != original_body_iseq) {\n");
-    fprintf(f, "        return Qundef;\n");
-    fprintf(f, "    }\n");
-
     compile_insns(f, body, 0, 0, &status);
     compile_cancel_handler(f, body, &status);
     fprintf(f, "\n} /* end of %s */\n", funcname);
 
-    xfree(status.stack_size_for_pos);
+    free(status.stack_size_for_pos);
     return status.success;
 }

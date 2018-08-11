@@ -1302,7 +1302,7 @@ vm_expandarray(VALUE *sp, VALUE ary, rb_num_t num, int flag)
 static VALUE vm_call_general(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp, struct rb_calling_info *calling, const struct rb_call_info *ci, struct rb_call_cache *cc);
 
 MJIT_FUNC_EXPORTED void
-vm_search_method_slowpath(const struct rb_call_info *ci, struct rb_call_cache *cc, VALUE klass)
+rb_vm_search_method_slowpath(const struct rb_call_info *ci, struct rb_call_cache *cc, VALUE klass)
 {
     cc->me = rb_callable_method_entry(klass, ci->mid);
     VM_ASSERT(callable_method_entry_p(cc->me));
@@ -1318,6 +1318,9 @@ vm_search_method(const struct rb_call_info *ci, struct rb_call_cache *cc, VALUE 
 {
     VALUE klass = CLASS_OF(recv);
 
+    VM_ASSERT(klass != Qfalse);
+    VM_ASSERT(RBASIC_CLASS(klass) == 0 || rb_obj_is_kind_of(klass, rb_cClass));
+
 #if OPT_INLINE_METHOD_CACHE
     if (LIKELY(RB_DEBUG_COUNTER_INC_UNLESS(mc_global_state_miss,
 					   GET_GLOBAL_METHOD_STATE() == cc->method_state) &&
@@ -1330,7 +1333,7 @@ vm_search_method(const struct rb_call_info *ci, struct rb_call_cache *cc, VALUE 
     }
     RB_DEBUG_COUNTER_INC(mc_inline_miss);
 #endif
-    vm_search_method_slowpath(ci, cc, klass);
+    rb_vm_search_method_slowpath(ci, cc, klass);
 }
 
 static inline int
@@ -1470,7 +1473,7 @@ rb_eql_opt(VALUE obj1, VALUE obj2)
     return opt_eql_func(obj1, obj2, &ci, &cc);
 }
 
-extern VALUE vm_call0(rb_execution_context_t *ec, VALUE, ID, int, const VALUE*, const rb_callable_method_entry_t *);
+extern VALUE rb_vm_call0(rb_execution_context_t *ec, VALUE, ID, int, const VALUE*, const rb_callable_method_entry_t *);
 
 static VALUE
 check_match(rb_execution_context_t *ec, VALUE pattern, VALUE target, enum vm_check_match_type type)
@@ -1487,7 +1490,7 @@ check_match(rb_execution_context_t *ec, VALUE pattern, VALUE target, enum vm_che
 	const rb_callable_method_entry_t *me =
 	    rb_callable_method_entry_with_refinements(CLASS_OF(pattern), idEqq, NULL);
 	if (me) {
-	    return vm_call0(ec, pattern, idEqq, 1, &target, me);
+            return rb_vm_call0(ec, pattern, idEqq, 1, &target, me);
 	}
 	else {
 	    /* fallback to funcall (e.g. method_missing) */
@@ -1654,22 +1657,32 @@ vm_call_iseq_setup_2(rb_execution_context_t *ec, rb_control_frame_t *cfp, struct
     }
 }
 
+/* Used in JIT to ensure intended me is used and to reduce memory access by inlining values. */
+ALWAYS_INLINE(static inline VALUE vm_call_iseq_setup_normal_internal(rb_execution_context_t *ec, rb_control_frame_t *cfp, int argc, VALUE recv, VALUE block_handler, const rb_callable_method_entry_t *me, const rb_iseq_t *iseq, const VALUE *pc, int param_size, int local_size, int stack_max));
 static inline VALUE
-vm_call_iseq_setup_normal(rb_execution_context_t *ec, rb_control_frame_t *cfp, struct rb_calling_info *calling, const struct rb_call_info *ci, struct rb_call_cache *cc,
-			  int opt_pc, int param_size, int local_size)
+vm_call_iseq_setup_normal_internal(rb_execution_context_t *ec, rb_control_frame_t *cfp, int argc, VALUE recv, VALUE block_handler, const rb_callable_method_entry_t *me,
+                                   const rb_iseq_t *iseq, const VALUE *pc, int param_size, int local_size, int stack_max)
 {
-    const rb_callable_method_entry_t *me = cc->me;
-    const rb_iseq_t *iseq = def_iseq_ptr(me->def);
-    VALUE *argv = cfp->sp - calling->argc;
+    VALUE *argv = cfp->sp - argc;
     VALUE *sp = argv + param_size;
     cfp->sp = argv - 1 /* recv */;
 
-    vm_push_frame(ec, iseq, VM_FRAME_MAGIC_METHOD | VM_ENV_FLAG_LOCAL, calling->recv,
-		  calling->block_handler, (VALUE)me,
-		  iseq->body->iseq_encoded + opt_pc, sp,
-		  local_size - param_size,
-		  iseq->body->stack_max);
+    vm_push_frame(ec, iseq, VM_FRAME_MAGIC_METHOD | VM_ENV_FLAG_LOCAL, recv,
+                  block_handler, (VALUE)me,
+                  pc, sp,
+                  local_size - param_size,
+                  stack_max);
     return Qundef;
+}
+
+static inline VALUE
+vm_call_iseq_setup_normal(rb_execution_context_t *ec, rb_control_frame_t *cfp, struct rb_calling_info *calling, const struct rb_call_info *ci, struct rb_call_cache *cc,
+                          int opt_pc, int param_size, int local_size)
+{
+    const rb_callable_method_entry_t *me = cc->me;
+    const rb_iseq_t *iseq = def_iseq_ptr(me->def);
+    return vm_call_iseq_setup_normal_internal(ec, cfp, calling->argc, calling->recv, calling->block_handler, me, iseq,
+                                              iseq->body->iseq_encoded + opt_pc, param_size, local_size, iseq->body->stack_max);
 }
 
 static inline VALUE
@@ -1969,7 +1982,7 @@ vm_call_bmethod_body(rb_execution_context_t *ec, struct rb_calling_info *calling
     /* control block frame */
     ec->passed_bmethod_me = cc->me;
     GetProcPtr(cc->me->def->body.proc, proc);
-    val = vm_invoke_bmethod(ec, proc, calling->recv, calling->argc, argv, calling->block_handler);
+    val = rb_vm_invoke_bmethod(ec, proc, calling->recv, calling->argc, argv, calling->block_handler);
 
     return val;
 }
@@ -2470,7 +2483,6 @@ vm_search_super_method(const rb_execution_context_t *ec, rb_control_frame_t *reg
 		       struct rb_calling_info *calling, struct rb_call_info *ci, struct rb_call_cache *cc)
 {
     VALUE current_defined_class, klass;
-    VALUE sigval = TOPN(calling->argc);
     const rb_callable_method_entry_t *me = rb_vm_frame_method_entry(reg_cfp);
 
     if (!me) {
@@ -2496,7 +2508,7 @@ vm_search_super_method(const rb_execution_context_t *ec, rb_control_frame_t *reg
 		 rb_obj_class(calling->recv), m);
     }
 
-    if (me->def->type == VM_METHOD_TYPE_BMETHOD && !sigval) {
+    if (me->def->type == VM_METHOD_TYPE_BMETHOD && (ci->flag & VM_CALL_ZSUPER)) {
 	rb_raise(rb_eRuntimeError,
 		 "implicit argument passing of super from method defined"
 		 " by define_method() is not supported."
@@ -3207,6 +3219,17 @@ vm_find_or_create_class_by_id(ID id,
 
       default:
 	rb_bug("unknown defineclass type: %d", (int)type);
+    }
+}
+
+static VALUE
+vm_opt_str_freeze(VALUE str, int bop, ID id)
+{
+    if (BASIC_OP_UNREDEFINED_P(bop, STRING_REDEFINED_OP_FLAG)) {
+	return str;
+    }
+    else {
+	return rb_funcall(rb_str_resurrect(str), id, 0);
     }
 }
 

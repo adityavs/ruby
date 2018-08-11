@@ -43,7 +43,7 @@
        * sp_inc: Used to dynamically calculate sp increase in
          `insn_stack_increase`.
 
-       * handles_frame: If it is true, VM moves pc before insn body.
+       * handles_sp: If it is true, VM deals with sp in the insn.
 
    - Attributes can access operands, but not stack (push/pop) variables.
 
@@ -239,8 +239,7 @@ setclassvariable
 }
 
 /* Get constant variable id. If klass is Qnil, constants
-   are searched in the current scope. If klass is Qfalse, constants
-   are searched as top level constants. Otherwise, get constant under klass
+   are searched in the current scope. Otherwise, get constant under klass
    class or module.
  */
 DEFINE_INSN
@@ -252,10 +251,7 @@ getconstant
     val = vm_get_ev_const(ec, klass, id, 0);
 }
 
-/* Set constant variable id. If klass is Qfalse, constant
-   is able to access in this scope. if klass is Qnil, set
-   top level constant. otherwise, set constant under klass
-   class or module.
+/* Set constant variable id under cbase class or module.
  */
 DEFINE_INSN
 setconstant
@@ -375,7 +371,6 @@ tostring
 (VALUE val, VALUE str)
 (VALUE val)
 {
-    VALUE rb_obj_as_string_result(VALUE str, VALUE obj);
     val = rb_obj_as_string_result(str, val);
 }
 
@@ -399,8 +394,6 @@ toregexp
 (VALUE val)
 // attr rb_snum_t sp_inc = 1 - cnt;
 {
-    VALUE rb_reg_new_ary(VALUE ary, int options);
-    VALUE rb_ary_tmp_new_from_values(VALUE, long, const VALUE *);
     const VALUE ary = rb_ary_tmp_new_from_values(0, cnt, STACK_ADDR_FROM_TOP(cnt));
     val = rb_reg_new_ary(ary, (int)opt);
     rb_ary_clear(ary);
@@ -633,7 +626,7 @@ defined
      `flag & VM_CHECKMATCH_TYPE_MASK' describe how to check pattern.
       VM_CHECKMATCH_TYPE_WHEN: ignore target and check pattern is truthy.
       VM_CHECKMATCH_TYPE_CASE: check `patten === target'.
-      VM_CHECKMATCH_TYPE_RESCUE: check `pattern.kind_op?(Module) && pattern == target'.
+      VM_CHECKMATCH_TYPE_RESCUE: check `pattern.kind_op?(Module) && pattern === target'.
      if `flag & VM_CHECKMATCH_ARRAY' is not 0, then `patten' is array of patterns.
  */
 DEFINE_INSN
@@ -690,7 +683,7 @@ defineclass
 (ID id, ISEQ class_iseq, rb_num_t flags)
 (VALUE cbase, VALUE super)
 (VALUE val)
-// attr bool handles_frame = true;
+// attr bool handles_sp = true;
 {
     VALUE klass = vm_find_or_create_class_by_id(id, flags, cbase, super);
 
@@ -717,13 +710,14 @@ send
 (CALL_INFO ci, CALL_CACHE cc, ISEQ blockiseq)
 (...)
 (VALUE val)
-// attr bool handles_frame = true;
+// attr bool handles_sp = true;
 // attr rb_snum_t sp_inc = - (int)(ci->orig_argc + ((ci->flag & VM_CALL_ARGS_BLOCKARG) ? 1 : 0));
 {
     struct rb_calling_info calling;
 
-    vm_caller_setup_arg_block(ec, reg_cfp, &calling, ci, blockiseq, FALSE);
-    vm_search_method(ci, cc, calling.recv = TOPN(calling.argc = ci->orig_argc));
+    calling.block_handler = vm_caller_setup_arg_block(ec, reg_cfp, ci, blockiseq, FALSE);
+    calling.recv = TOPN(calling.argc = ci->orig_argc);
+    vm_search_method(ci, cc, calling.recv);
     CALL_METHOD(&calling, ci, cc);
 }
 
@@ -733,12 +727,7 @@ opt_str_freeze
 ()
 (VALUE val)
 {
-    if (BASIC_OP_UNREDEFINED_P(BOP_FREEZE, STRING_REDEFINED_OP_FLAG)) {
-	val = str;
-    }
-    else {
-	val = rb_funcall(rb_str_resurrect(str), idFreeze, 0);
-    }
+    val = vm_opt_str_freeze(str, BOP_FREEZE, idFreeze);
 }
 
 DEFINE_INSN
@@ -747,12 +736,7 @@ opt_str_uminus
 ()
 (VALUE val)
 {
-    if (BASIC_OP_UNREDEFINED_P(BOP_UMINUS, STRING_REDEFINED_OP_FLAG)) {
-	val = str;
-    }
-    else {
-	val = rb_funcall(rb_str_resurrect(str), idUMinus, 0);
-    }
+    val = vm_opt_str_freeze(str, BOP_UMINUS, idUMinus);
 }
 
 DEFINE_INSN
@@ -781,7 +765,7 @@ opt_send_without_block
 (CALL_INFO ci, CALL_CACHE cc)
 (...)
 (VALUE val)
-// attr bool handles_frame = true;
+// attr bool handles_sp = true;
 // attr rb_snum_t sp_inc = -ci->orig_argc;
 {
     struct rb_calling_info calling;
@@ -796,14 +780,13 @@ invokesuper
 (CALL_INFO ci, CALL_CACHE cc, ISEQ blockiseq)
 (...)
 (VALUE val)
-// attr bool handles_frame = true;
+// attr bool handles_sp = true;
 // attr rb_snum_t sp_inc = - (int)(ci->orig_argc + ((ci->flag & VM_CALL_ARGS_BLOCKARG) ? 1 : 0));
 {
     struct rb_calling_info calling;
-    calling.argc = ci->orig_argc;
 
-    vm_caller_setup_arg_block(ec, reg_cfp, &calling, ci, blockiseq, TRUE);
-    calling.recv = GET_SELF();
+    calling.block_handler = vm_caller_setup_arg_block(ec, reg_cfp, ci, blockiseq, TRUE);
+    calling.recv = TOPN(calling.argc = ci->orig_argc);
     vm_search_super_method(ec, GET_CFP(), &calling, ci, cc);
     CALL_METHOD(&calling, ci, cc);
 }
@@ -814,7 +797,7 @@ invokeblock
 (CALL_INFO ci)
 (...)
 (VALUE val)
-// attr bool handles_frame = true;
+// attr bool handles_sp = true;
 // attr rb_snum_t sp_inc = 1 - ci->orig_argc;
 {
     struct rb_calling_info calling;
@@ -841,7 +824,7 @@ leave
 ()
 (VALUE val)
 (VALUE val)
-// attr bool handles_frame = true;
+// attr bool handles_sp = true;
 {
     if (OPT_CHECKED_RUN) {
 	const VALUE *const bp = vm_base_ptr(reg_cfp);
@@ -1003,6 +986,9 @@ opt_plus
     val = vm_opt_plus(recv, obj);
 
     if (val == Qundef) {
+#ifndef MJIT_HEADER
+        ADD_PC(-WIDTH_OF_opt_send_without_block);
+#endif
 	DISPATCH_ORIGINAL_INSN(opt_send_without_block);
     }
 }
@@ -1017,6 +1003,9 @@ opt_minus
     val = vm_opt_minus(recv, obj);
 
     if (val == Qundef) {
+#ifndef MJIT_HEADER
+        ADD_PC(-WIDTH_OF_opt_send_without_block);
+#endif
 	DISPATCH_ORIGINAL_INSN(opt_send_without_block);
     }
 }
@@ -1031,6 +1020,9 @@ opt_mult
     val = vm_opt_mult(recv, obj);
 
     if (val == Qundef) {
+#ifndef MJIT_HEADER
+        ADD_PC(-WIDTH_OF_opt_send_without_block);
+#endif
 	DISPATCH_ORIGINAL_INSN(opt_send_without_block);
     }
 }
@@ -1045,6 +1037,9 @@ opt_div
     val = vm_opt_div(recv, obj);
 
     if (val == Qundef) {
+#ifndef MJIT_HEADER
+        ADD_PC(-WIDTH_OF_opt_send_without_block);
+#endif
 	DISPATCH_ORIGINAL_INSN(opt_send_without_block);
     }
 }
@@ -1059,6 +1054,9 @@ opt_mod
     val = vm_opt_mod(recv, obj);
 
     if (val == Qundef) {
+#ifndef MJIT_HEADER
+        ADD_PC(-WIDTH_OF_opt_send_without_block);
+#endif
 	DISPATCH_ORIGINAL_INSN(opt_send_without_block);
     }
 }
@@ -1073,6 +1071,9 @@ opt_eq
     val = opt_eq_func(recv, obj, ci, cc);
 
     if (val == Qundef) {
+#ifndef MJIT_HEADER
+        ADD_PC(-WIDTH_OF_opt_send_without_block);
+#endif
 	DISPATCH_ORIGINAL_INSN(opt_send_without_block);
     }
 }
@@ -1088,7 +1089,7 @@ opt_neq
 
     if (val == Qundef) {
 #ifndef MJIT_HEADER
-	ADD_PC(2); /* !!! */
+        ADD_PC(-WIDTH_OF_opt_send_without_block);
 #endif
 	DISPATCH_ORIGINAL_INSN(opt_send_without_block);
     }
@@ -1104,6 +1105,9 @@ opt_lt
     val = vm_opt_lt(recv, obj);
 
     if (val == Qundef) {
+#ifndef MJIT_HEADER
+        ADD_PC(-WIDTH_OF_opt_send_without_block);
+#endif
 	DISPATCH_ORIGINAL_INSN(opt_send_without_block);
     }
 }
@@ -1118,6 +1122,9 @@ opt_le
     val = vm_opt_le(recv, obj);
 
     if (val == Qundef) {
+#ifndef MJIT_HEADER
+        ADD_PC(-WIDTH_OF_opt_send_without_block);
+#endif
 	DISPATCH_ORIGINAL_INSN(opt_send_without_block);
     }
 }
@@ -1132,6 +1139,9 @@ opt_gt
     val = vm_opt_gt(recv, obj);
 
     if (val == Qundef) {
+#ifndef MJIT_HEADER
+        ADD_PC(-WIDTH_OF_opt_send_without_block);
+#endif
 	DISPATCH_ORIGINAL_INSN(opt_send_without_block);
     }
 }
@@ -1146,6 +1156,9 @@ opt_ge
     val = vm_opt_ge(recv, obj);
 
     if (val == Qundef) {
+#ifndef MJIT_HEADER
+        ADD_PC(-WIDTH_OF_opt_send_without_block);
+#endif
 	DISPATCH_ORIGINAL_INSN(opt_send_without_block);
     }
 }
@@ -1160,6 +1173,9 @@ opt_ltlt
     val = vm_opt_ltlt(recv, obj);
 
     if (val == Qundef) {
+#ifndef MJIT_HEADER
+        ADD_PC(-WIDTH_OF_opt_send_without_block);
+#endif
 	DISPATCH_ORIGINAL_INSN(opt_send_without_block);
     }
 }
@@ -1174,6 +1190,9 @@ opt_aref
     val = vm_opt_aref(recv, obj);
 
     if (val == Qundef) {
+#ifndef MJIT_HEADER
+        ADD_PC(-WIDTH_OF_opt_send_without_block);
+#endif
 	DISPATCH_ORIGINAL_INSN(opt_send_without_block);
     }
 }
@@ -1188,6 +1207,9 @@ opt_aset
     val = vm_opt_aset(recv, obj, set);
 
     if (val == Qundef) {
+#ifndef MJIT_HEADER
+        ADD_PC(-WIDTH_OF_opt_send_without_block);
+#endif
 	DISPATCH_ORIGINAL_INSN(opt_send_without_block);
     }
 }
@@ -1208,7 +1230,7 @@ opt_aset_with
 #ifndef MJIT_HEADER
 	TOPN(0) = rb_str_resurrect(key);
 	PUSH(val);
-	ADD_PC(1); /* !!! */
+        ADD_PC(-WIDTH_OF_opt_send_without_block);
 #endif
 	DISPATCH_ORIGINAL_INSN(opt_send_without_block);
     }
@@ -1226,7 +1248,7 @@ opt_aref_with
     if (val == Qundef) {
 #ifndef MJIT_HEADER
 	PUSH(rb_str_resurrect(key));
-	ADD_PC(1); /* !!! */
+        ADD_PC(-WIDTH_OF_opt_send_without_block);
 #endif
 	DISPATCH_ORIGINAL_INSN(opt_send_without_block);
     }
@@ -1242,6 +1264,9 @@ opt_length
     val = vm_opt_length(recv, BOP_LENGTH);
 
     if (val == Qundef) {
+#ifndef MJIT_HEADER
+        ADD_PC(-WIDTH_OF_opt_send_without_block);
+#endif
 	DISPATCH_ORIGINAL_INSN(opt_send_without_block);
     }
 }
@@ -1256,6 +1281,9 @@ opt_size
     val = vm_opt_length(recv, BOP_SIZE);
 
     if (val == Qundef) {
+#ifndef MJIT_HEADER
+        ADD_PC(-WIDTH_OF_opt_send_without_block);
+#endif
 	DISPATCH_ORIGINAL_INSN(opt_send_without_block);
     }
 }
@@ -1270,6 +1298,9 @@ opt_empty_p
     val = vm_opt_empty_p(recv);
 
     if (val == Qundef) {
+#ifndef MJIT_HEADER
+        ADD_PC(-WIDTH_OF_opt_send_without_block);
+#endif
 	DISPATCH_ORIGINAL_INSN(opt_send_without_block);
     }
 }
@@ -1284,6 +1315,9 @@ opt_succ
     val = vm_opt_succ(recv);
 
     if (val == Qundef) {
+#ifndef MJIT_HEADER
+        ADD_PC(-WIDTH_OF_opt_send_without_block);
+#endif
 	DISPATCH_ORIGINAL_INSN(opt_send_without_block);
     }
 }
@@ -1298,6 +1332,9 @@ opt_not
     val = vm_opt_not(ci, cc, recv);
 
     if (val == Qundef) {
+#ifndef MJIT_HEADER
+        ADD_PC(-WIDTH_OF_opt_send_without_block);
+#endif
 	DISPATCH_ORIGINAL_INSN(opt_send_without_block);
     }
 }
@@ -1322,6 +1359,9 @@ opt_regexpmatch2
     val = vm_opt_regexpmatch2(obj2, obj1);
 
     if (val == Qundef) {
+#ifndef MJIT_HEADER
+        ADD_PC(-WIDTH_OF_opt_send_without_block);
+#endif
 	DISPATCH_ORIGINAL_INSN(opt_send_without_block);
     }
 }
@@ -1332,7 +1372,7 @@ opt_call_c_function
 (rb_insn_func_t funcptr)
 ()
 ()
-// attr bool handles_frame = true;
+// attr bool handles_sp = true;
 {
     reg_cfp = (funcptr)(ec, reg_cfp);
 

@@ -92,8 +92,13 @@ static VALUE sym_on_blocking;
 static VALUE sym_never;
 static ID id_locals;
 
-static void sleep_timespec(rb_thread_t *, struct timespec, int spurious_check);
-static void sleep_forever(rb_thread_t *th, int nodeadlock, int spurious_check);
+enum SLEEP_FLAGS {
+    SLEEP_DEADLOCKABLE = 0x1,
+    SLEEP_SPURIOUS_CHECK = 0x2
+};
+
+static void sleep_timespec(rb_thread_t *, struct timespec, unsigned int fl);
+static void sleep_forever(rb_thread_t *th, unsigned int fl);
 static void rb_thread_sleep_deadly_allow_spurious_wakeup(void);
 static int rb_threadptr_dead(rb_thread_t *th);
 static void rb_check_deadlock(rb_vm_t *vm);
@@ -235,6 +240,21 @@ timeval_for(struct timeval *tv, const struct timespec *ts)
         return tv;
     }
     return 0;
+}
+
+static void
+timeout_prepare(struct timespec **tsp,
+            struct timespec *ts, struct timespec *end,
+            const struct timeval *timeout)
+{
+    if (timeout) {
+        getclockofday(end);
+        timespec_add(end, timespec_for(ts, timeout));
+        *tsp = ts;
+    }
+    else {
+	*tsp = 0;
+    }
 }
 
 #if THREAD_DEBUG
@@ -393,6 +413,10 @@ rb_vm_gvl_destroy(rb_vm_t *vm)
     gvl_release(vm);
     gvl_destroy(vm);
     rb_native_mutex_destroy(&vm->thread_destruct_lock);
+    if (0) {
+        /* may be held by running threads */
+        rb_native_mutex_destroy(&vm->waitpid_lock);
+    }
 }
 
 void
@@ -1135,24 +1159,25 @@ double2timespec(struct timespec *ts, double d)
 }
 
 static void
-sleep_forever(rb_thread_t *th, int deadlockable, int spurious_check)
+sleep_forever(rb_thread_t *th, unsigned int fl)
 {
     enum rb_thread_status prev_status = th->status;
-    enum rb_thread_status status = deadlockable ? THREAD_STOPPED_FOREVER : THREAD_STOPPED;
+    enum rb_thread_status status;
 
+    status  = fl & SLEEP_DEADLOCKABLE ? THREAD_STOPPED_FOREVER : THREAD_STOPPED;
     th->status = status;
     RUBY_VM_CHECK_INTS_BLOCKING(th->ec);
     while (th->status == status) {
-	if (deadlockable) {
+	if (fl & SLEEP_DEADLOCKABLE) {
 	    th->vm->sleeper++;
 	    rb_check_deadlock(th->vm);
 	}
 	native_sleep(th, 0);
-	if (deadlockable) {
+	if (fl & SLEEP_DEADLOCKABLE) {
 	    th->vm->sleeper--;
 	}
 	RUBY_VM_CHECK_INTS_BLOCKING(th->ec);
-	if (!spurious_check)
+	if (!(fl & SLEEP_SPURIOUS_CHECK))
 	    break;
     }
     th->status = prev_status;
@@ -1238,7 +1263,7 @@ timespec_update_expire(struct timespec *ts, const struct timespec *end)
 }
 
 static void
-sleep_timespec(rb_thread_t *th, struct timespec ts, int spurious_check)
+sleep_timespec(rb_thread_t *th, struct timespec ts, unsigned int fl)
 {
     struct timespec end;
     enum rb_thread_status prev_status = th->status;
@@ -1250,9 +1275,9 @@ sleep_timespec(rb_thread_t *th, struct timespec ts, int spurious_check)
     while (th->status == THREAD_STOPPED) {
 	native_sleep(th, &ts);
 	RUBY_VM_CHECK_INTS_BLOCKING(th->ec);
-	if (timespec_update_expire(&ts, &end))
+	if (!(fl & SLEEP_SPURIOUS_CHECK))
 	    break;
-	if (!spurious_check)
+	if (timespec_update_expire(&ts, &end))
 	    break;
     }
     th->status = prev_status;
@@ -1262,21 +1287,21 @@ void
 rb_thread_sleep_forever(void)
 {
     thread_debug("rb_thread_sleep_forever\n");
-    sleep_forever(GET_THREAD(), FALSE, TRUE);
+    sleep_forever(GET_THREAD(), SLEEP_SPURIOUS_CHECK);
 }
 
 void
 rb_thread_sleep_deadly(void)
 {
     thread_debug("rb_thread_sleep_deadly\n");
-    sleep_forever(GET_THREAD(), TRUE, TRUE);
+    sleep_forever(GET_THREAD(), SLEEP_DEADLOCKABLE|SLEEP_SPURIOUS_CHECK);
 }
 
 static void
 rb_thread_sleep_deadly_allow_spurious_wakeup(void)
 {
     thread_debug("rb_thread_sleep_deadly_allow_spurious_wakeup\n");
-    sleep_forever(GET_THREAD(), TRUE, FALSE);
+    sleep_forever(GET_THREAD(), SLEEP_DEADLOCKABLE);
 }
 
 void
@@ -1286,7 +1311,7 @@ rb_thread_wait_for(struct timeval time)
     struct timespec ts;
 
     timespec_for(&ts, &time);
-    sleep_timespec(th, ts, 1);
+    sleep_timespec(th, ts, SLEEP_SPURIOUS_CHECK);
 }
 
 /*
@@ -1372,12 +1397,15 @@ blocking_region_begin(rb_thread_t *th, struct rb_blocking_region_buffer *region,
 static inline void
 blocking_region_end(rb_thread_t *th, struct rb_blocking_region_buffer *region)
 {
+    /* entry to ubf_list still permitted at this point, make it impossible: */
+    unblock_function_clear(th);
+    /* entry to ubf_list impossible at this point, so unregister is safe: */
+    unregister_ubf_list(th);
+
     gvl_acquire(th->vm, th);
     rb_thread_set_current(th);
     thread_debug("leave blocking region (%p)\n", (void *)th);
-    unregister_ubf_list(th);
     th->blocking_region_buffer = 0;
-    unblock_function_clear(th);
     if (th->status == THREAD_STOPPED) {
 	th->status = region->prev_status;
     }
@@ -3815,38 +3843,57 @@ wait_retryable(int *result, int errnum, struct timespec *timeout,
 #define restore_fdset(fds1, fds2) \
     ((fds1) ? rb_fd_dup(fds1, fds2) : (void)0)
 
+struct select_set {
+    rb_fdset_t read;
+    rb_fdset_t write;
+    rb_fdset_t except;
+};
+
+static size_t
+select_set_memsize(const void *p)
+{
+    return sizeof(struct select_set);
+}
+
+static void
+select_set_free(void *p)
+{
+    struct select_set *orig = p;
+
+    rb_fd_term(&orig->read);
+    rb_fd_term(&orig->write);
+    rb_fd_term(&orig->except);
+    xfree(orig);
+}
+
+static const rb_data_type_t select_set_type = {
+    "select_set",
+    {NULL, select_set_free, select_set_memsize,},
+    0, 0, RUBY_TYPED_FREE_IMMEDIATELY
+};
+
 static int
 do_select(int n, rb_fdset_t *const readfds, rb_fdset_t *const writefds,
 	  rb_fdset_t *const exceptfds, struct timeval *timeout)
 {
     int MAYBE_UNUSED(result);
     int lerrno;
-    rb_fdset_t MAYBE_UNUSED(orig_read);
-    rb_fdset_t MAYBE_UNUSED(orig_write);
-    rb_fdset_t MAYBE_UNUSED(orig_except);
-    struct timespec end;
-    struct timespec *tsp = 0;
-    struct timespec ts
-#if defined(__GNUC__) && (__GNUC__ == 7 || __GNUC__ == 8)
-        = {0, 0}
-#endif
-        ;
+    struct timespec ts, end, *tsp;
     rb_thread_t *th = GET_THREAD();
+    VALUE o;
+    struct select_set *orig;
 
+    o = TypedData_Make_Struct(0, struct select_set, &select_set_type, orig);
+
+    timeout_prepare(&tsp, &ts, &end, timeout);
 #define do_select_update() \
-    (restore_fdset(readfds, &orig_read), \
-     restore_fdset(writefds, &orig_write), \
-     restore_fdset(exceptfds, &orig_except), \
+    (restore_fdset(readfds, &orig->read), \
+     restore_fdset(writefds, &orig->write), \
+     restore_fdset(exceptfds, &orig->except), \
      TRUE)
 
-    if (timeout) {
-        getclockofday(&end);
-        timespec_add(&end, timespec_for(&ts, timeout));
-        tsp = &ts;
-    }
-
 #define fd_init_copy(f) \
-    (f##fds) ? rb_fd_init_copy(&orig_##f, f##fds) : rb_fd_no_init(&orig_##f)
+    (f##fds) ? rb_fd_init_copy(&orig->f, f##fds) : rb_fd_no_init(&orig->f)
     fd_init_copy(read);
     fd_init_copy(write);
     fd_init_copy(except);
@@ -3861,14 +3908,13 @@ do_select(int n, rb_fdset_t *const readfds, rb_fdset_t *const writefds,
 	    if (result < 0) lerrno = errno;
 	}, ubf_select, th, FALSE);
 
-	RUBY_VM_CHECK_INTS_BLOCKING(th->ec);
+	RUBY_VM_CHECK_INTS_BLOCKING(th->ec); /* may raise */
     } while (wait_retryable(&result, lerrno, tsp, &end) && do_select_update());
 
-#define fd_term(f) if (f##fds) rb_fd_term(&orig_##f)
-    fd_term(read);
-    fd_term(write);
-    fd_term(except);
-#undef fd_term
+    /* didn't raise, perform cleanup ourselves */
+    select_set_free(orig);
+    rb_gc_force_recycle(o);
+
     if (result < 0) {
 	errno = lerrno;
     }
@@ -3947,8 +3993,8 @@ rb_thread_fd_select(int max, rb_fdset_t * read, rb_fdset_t * write, rb_fdset_t *
 
 #ifndef HAVE_PPOLL
 /* TODO: don't ignore sigmask */
-int
-ppoll(struct pollfd *fds, nfds_t nfds,
+static int
+ruby_ppoll(struct pollfd *fds, nfds_t nfds,
       const struct timespec *ts, const sigset_t *sigmask)
 {
     int timeout_ms;
@@ -3957,12 +4003,13 @@ ppoll(struct pollfd *fds, nfds_t nfds,
 	int tmp, tmp2;
 
 	if (ts->tv_sec > INT_MAX/1000)
-	    timeout_ms = -1;
+	    timeout_ms = INT_MAX;
 	else {
 	    tmp = (int)(ts->tv_sec * 1000);
-	    tmp2 = (int)(ts->tv_nsec / (1000 * 1000));
+	    /* round up 1ns to 1ms to avoid excessive wakeups for <1ms sleep */
+	    tmp2 = (int)((ts->tv_nsec + 999999L) / (1000L * 1000L));
 	    if (INT_MAX - tmp < tmp2)
-		timeout_ms = -1;
+		timeout_ms = INT_MAX;
 	    else
 		timeout_ms = (int)(tmp + tmp2);
 	}
@@ -3972,6 +4019,7 @@ ppoll(struct pollfd *fds, nfds_t nfds,
 
     return poll(fds, nfds, timeout_ms);
 }
+#  define ppoll(fds,nfds,ts,sigmask) ruby_ppoll((fds),(nfds),(ts),(sigmask))
 #endif
 
 /*
@@ -3982,17 +4030,10 @@ rb_wait_for_single_fd(int fd, int events, struct timeval *timeout)
 {
     struct pollfd fds;
     int result = 0, lerrno;
-    struct timespec ts;
-    struct timespec end;
-    struct timespec *tsp = 0;
+    struct timespec ts, end, *tsp;
     rb_thread_t *th = GET_THREAD();
 
-    if (timeout) {
-        getclockofday(&end);
-        timespec_add(&end, timespec_for(&ts, timeout));
-        tsp = &ts;
-    }
-
+    timeout_prepare(&tsp, &ts, &end, timeout);
     fds.fd = fd;
     fds.events = (short)events;
 
@@ -4128,6 +4169,9 @@ rb_gc_set_stack_end(VALUE **stack_end_p)
 #endif
 
 
+/* signal.c */
+void ruby_sigchld_handler(rb_vm_t *);
+
 /*
  *
  */
@@ -4160,6 +4204,7 @@ timer_thread_function(void *arg)
     rb_native_mutex_unlock(&vm->thread_destruct_lock);
 
     /* check signal */
+    ruby_sigchld_handler(vm);
     rb_threadptr_check_signal(vm->main_thread);
 
 #if 0
@@ -4244,6 +4289,9 @@ rb_thread_atfork_internal(rb_thread_t *th, void (*atfork)(rb_thread_t *, const r
     }
     rb_vm_living_threads_init(vm);
     rb_vm_living_threads_insert(vm, th);
+
+    /* may be held by MJIT threads in parent */
+    rb_native_mutex_initialize(&vm->waitpid_lock);
     vm->fork_gen++;
 
     vm->sleeper = 0;
@@ -4260,6 +4308,8 @@ terminate_atfork_i(rb_thread_t *th, const rb_thread_t *current_th)
     }
 }
 
+/* mjit.c */
+void mjit_child_after_fork(void);
 void
 rb_thread_atfork(void)
 {
@@ -4270,6 +4320,7 @@ rb_thread_atfork(void)
 
     /* We don't want reproduce CVE-2003-0900. */
     rb_reset_random_seed();
+    mjit_child_after_fork();
 }
 
 static void
@@ -4996,6 +5047,7 @@ Init_Thread(void)
 	    gvl_init(th->vm);
 	    gvl_acquire(th->vm, th);
             rb_native_mutex_initialize(&th->vm->thread_destruct_lock);
+            rb_native_mutex_initialize(&th->vm->waitpid_lock);
             rb_native_mutex_initialize(&th->interrupt_lock);
 
 	    th->pending_interrupt_queue = rb_ary_tmp_new(0);
@@ -5299,3 +5351,25 @@ rb_uninterruptible(VALUE (*b_proc)(ANYARGS), VALUE data)
 
     return rb_ensure(b_proc, data, rb_ary_pop, cur_th->pending_interrupt_mask_stack);
 }
+
+#ifndef USE_NATIVE_SLEEP_COND
+#  define USE_NATIVE_SLEEP_COND (0)
+#endif
+
+#if !USE_NATIVE_SLEEP_COND
+rb_nativethread_cond_t *
+rb_sleep_cond_get(const rb_execution_context_t *ec)
+{
+    rb_nativethread_cond_t *cond = ALLOC(rb_nativethread_cond_t);
+    rb_native_cond_initialize(cond);
+
+    return cond;
+}
+
+void
+rb_sleep_cond_put(rb_nativethread_cond_t *cond)
+{
+    rb_native_cond_destroy(cond);
+    xfree(cond);
+}
+#endif /* !USE_NATIVE_SLEEP_COND */

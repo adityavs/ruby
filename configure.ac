@@ -15,9 +15,9 @@ AS_MESSAGE([checking ${msg_checking}$1${msg_reset}...])])dnl
 
 AC_DISABLE_OPTION_CHECKING
 
-AC_ARG_VAR([cflags], [additional CFLAGS])
-AC_ARG_VAR([cppflags], [additional CPPFLAGS])
-AC_ARG_VAR([cxxflags], [additional CXXFLAGS])
+AC_ARG_VAR([cflags], [additional CFLAGS (ignored when CFLAGS is given)])
+AC_ARG_VAR([cppflags], [additional CPPFLAGS (ignored when CPPFLAGS is given)])
+AC_ARG_VAR([cxxflags], [additional CXXFLAGS (ignored when CXXFLAGS is given)])
 
 : "environment section" && {
 HAVE_BASERUBY=yes
@@ -687,8 +687,8 @@ test -z "${ac_env_CXXFLAGS_set}" -a -n "${cxxflags+set}" && eval CXXFLAGS="\"$cx
 
 : "header and library section" && {
 AC_ARG_WITH(winnt-ver,
-  AS_HELP_STRING([--with-winnt-ver=0xXXXX], [target Windows NT version (default to 0x0501)]),
-  [with_winnt_ver="$withval"], [with_winnt_ver="0x0501"])
+  AS_HELP_STRING([--with-winnt-ver=0xXXXX], [target Windows NT version (default to 0x0600)]),
+  [with_winnt_ver="$withval"], [with_winnt_ver="0x0600"])
 AS_CASE(["$target_os"],
 [mingw*], [
   RUBY_APPEND_OPTION(CPPFLAGS, -D_WIN32_WINNT=$with_winnt_ver)
@@ -766,6 +766,7 @@ AS_CASE(["$target_os"],
 		AS_IF([test $gcc_major -lt 4 -o \( $gcc_major -eq 4 -a $gcc_minor -lt 3 \)], [
 		    ac_cv_func___builtin_setjmp=no
 		])
+		with_setjmp_type=sigsetjmp # to hijack SIGCHLD handler
 		AC_CACHE_CHECK(for broken crypt with 8bit chars, rb_cv_broken_crypt,
 		    [AC_TRY_RUN([
 #include <stdio.h>
@@ -1782,6 +1783,7 @@ AC_CHECK_FUNCS(getsid)
 AC_CHECK_FUNCS(gettimeofday)		# for making ac_cv_func_gettimeofday
 AC_CHECK_FUNCS(getuidx)
 AC_CHECK_FUNCS(gmtime_r)
+AC_CHECK_FUNCS(grantpt)
 AC_CHECK_FUNCS(initgroups)
 AC_CHECK_FUNCS(ioctl)
 AC_CHECK_FUNCS(isfinite)
@@ -2202,8 +2204,10 @@ AS_IF([test "$rb_cv_rshift_sign" = yes], [
   AC_DEFINE(RSHIFT(x,y), (((x)<0) ? ~((~(x))>>(int)(y)) : (x)>>(int)(y)))
 ])
 
-AS_IF([test x"$ac_cv_func_gettimeofday" != xyes], [
-    AC_MSG_ERROR(gettimeofday() must exist)
+AS_CASE(["$ac_cv_func_gettimeofday:$ac_cv_func_clock_gettime"],
+[*yes*], [],
+[
+    AC_MSG_ERROR(clock_gettime() or gettimeofday() must exist)
 ])
 
 AS_IF([test "$ac_cv_func_sysconf" = yes], [
@@ -3729,10 +3733,9 @@ AC_ARG_ENABLE(rubygems,
 	AS_HELP_STRING([--disable-rubygems], [disable rubygems by default]),
 	[enable_rubygems="$enableval"], [enable_rubygems=yes])
 AS_IF([test x"$enable_rubygems" = xno], [
-    AC_DEFINE(DISABLE_RUBYGEMS, 1)
-    USE_RUBYGEMS=NO
+    USE_RUBYGEMS=no
 ], [
-    USE_RUBYGEMS=YES
+    USE_RUBYGEMS=yes
 ])
 AC_SUBST(USE_RUBYGEMS)
 

@@ -14,10 +14,10 @@
 
 RUBY_SYMBOL_EXPORT_BEGIN
 
-extern VALUE ruby_vm_const_missing_count;
-extern rb_serial_t ruby_vm_global_method_state;
-extern rb_serial_t ruby_vm_global_constant_state;
-extern rb_serial_t ruby_vm_class_serial;
+RUBY_EXTERN VALUE ruby_vm_const_missing_count;
+RUBY_EXTERN rb_serial_t ruby_vm_global_method_state;
+RUBY_EXTERN rb_serial_t ruby_vm_global_constant_state;
+RUBY_EXTERN rb_serial_t ruby_vm_class_serial;
 
 RUBY_SYMBOL_EXPORT_END
 
@@ -35,6 +35,17 @@ RUBY_SYMBOL_EXPORT_END
 /**********************************************************/
 /* deal with stack                                        */
 /**********************************************************/
+
+static inline int
+rb_obj_hidden_p(VALUE obj)
+{
+    if (SPECIAL_CONST_P(obj)) {
+        return FALSE;
+    }
+    else {
+        return RBASIC_CLASS(obj) ? FALSE : TRUE;
+    }
+}
 
 #define PUSH(x) (SET_SV(x), INC_SP(1))
 #define TOPN(n) (*(GET_SP()-(n)-1))
@@ -180,6 +191,9 @@ enum vm_regan_acttype {
 #endif
 
 #define GET_BLOCK_HANDLER() (GET_LEP()[VM_ENV_DATA_INDEX_SPECVAL])
+
+#define WIDTH_OF_opt_send_without_block \
+    ((rb_snum_t)attr_width_opt_send_without_block(0, 0))
 
 /**********************************************************/
 /* deal with control flow 3: exception                    */

@@ -59,7 +59,10 @@
 	  (Current).end_pos = YYRHSLOC(Rhs, N).end_pos;			\
 	}								\
       else								\
-	RUBY_SET_YYLLOC_OF_NONE(Current);				\
+        {                                                               \
+          (Current).beg_pos = YYRHSLOC(Rhs, 0).end_pos;                 \
+          (Current).end_pos = YYRHSLOC(Rhs, 0).end_pos;                 \
+        }                                                               \
     while (0)
 
 #define RUBY_SET_YYLLOC_FROM_STRTERM_HEREDOC(Current)			\
@@ -563,7 +566,7 @@ typedef struct rb_strterm_literal_struct {
 } rb_strterm_literal_t;
 
 struct rb_strterm_heredoc_struct {
-    SIGNED_VALUE sourceline;
+    SIGNED_VALUE sourceline; /* lineno of the line that contains `<<"END"` */
     VALUE term;		/* `"END"` of `<<"END"` */
     VALUE lastline;	/* the string of line that contains `<<"END"` */
     union {
@@ -747,6 +750,10 @@ static void token_info_warn(struct parser_params *p, const char *token, token_in
 %pure-parser
 %lex-param {struct parser_params *p}
 %parse-param {struct parser_params *p}
+%initial-action
+{
+    RUBY_SET_YYLLOC_OF_NONE(@$);
+};
 
 %union {
     VALUE val;
@@ -5973,7 +5980,11 @@ parse_string(struct parser_params *p, rb_strterm_literal_t *quote)
 static enum yytokentype
 heredoc_identifier(struct parser_params *p)
 {
-    int c = nextc(p), term, func = 0, term_len = 2; /* length of "<<" */
+    /*
+     * term_len is length of `<<"END"` except `END`,
+     * in this case term_len is 4 (<, <, " and ").
+     */
+    int c = nextc(p), term, func = 0, term_len = 2;
     enum yytokentype token = tSTRING_BEG;
     long len;
     int newline = 0;
@@ -9802,8 +9813,10 @@ cond0(struct parser_params *p, NODE *node, int method_op, const YYLTYPE *loc)
       case NODE_DOT3:
 	node->nd_beg = range_op(p, node->nd_beg, loc);
 	node->nd_end = range_op(p, node->nd_end, loc);
-	if (nd_type(node) == NODE_DOT2) nd_set_type(node,NODE_FLIP2);
-	else if (nd_type(node) == NODE_DOT3) nd_set_type(node, NODE_FLIP3);
+	if (nd_type(node) == NODE_DOT2 || nd_type(node) == NODE_DOT3) {
+	    nd_set_type(node, nd_type(node) == NODE_DOT2 ? NODE_FLIP2 : NODE_FLIP3);
+	    parser_warn(p, node, "flip-flop is deprecated");
+	}
 	if (!method_op && !e_option_supplied(p)) {
 	    int b = literal_node(node->nd_beg);
 	    int e = literal_node(node->nd_end);
@@ -10263,7 +10276,11 @@ new_bodystmt(struct parser_params *p, NODE *head, NODE *rescue, NODE *rescue_els
 {
     NODE *result = head;
     if (rescue) {
-        result = NEW_RESCUE(head, rescue, rescue_else, loc);
+        NODE *tmp = rescue_else ? rescue_else : rescue;
+        YYLTYPE rescue_loc = code_loc_gen(&head->nd_loc, &tmp->nd_loc);
+
+        result = NEW_RESCUE(head, rescue, rescue_else, &rescue_loc);
+        nd_set_line(result, rescue->nd_loc.beg_pos.lineno);
     }
     else if (rescue_else) {
         result = block_append(p, result, rescue_else);

@@ -296,6 +296,18 @@ int_neg_p(VALUE num)
 }
 
 int
+rb_int_positive_p(VALUE num)
+{
+    return int_pos_p(num);
+}
+
+int
+rb_int_negative_p(VALUE num)
+{
+    return int_neg_p(num);
+}
+
+int
 rb_num_negative_p(VALUE num)
 {
     return rb_num_negative_int_p(num);
@@ -475,7 +487,7 @@ num_sadded(VALUE x, VALUE name)
 	     rb_id2str(mid),
 	     rb_obj_class(x));
 
-    UNREACHABLE;
+    UNREACHABLE_RETURN(Qnil);
 }
 
 #if 0
@@ -1264,7 +1276,7 @@ rb_float_pow(VALUE x, VALUE y)
 	dx = RFLOAT_VALUE(x);
 	dy = RFLOAT_VALUE(y);
 	if (dx < 0 && dy != round(dy))
-	    return num_funcall1(rb_complex_raw1(x), idPow, y);
+	    return rb_dbl_complex_polar(pow(-dx, dy), dy);
     }
     else {
 	return rb_num_coerce_bin(x, y, idPow);
@@ -2569,10 +2581,9 @@ num_step_negative_p(VALUE num)
 }
 
 static int
-num_step_scan_args(int argc, const VALUE *argv, VALUE *to, VALUE *step)
+num_step_extract_args(int argc, const VALUE *argv, VALUE *to, VALUE *step, VALUE *by)
 {
     VALUE hash;
-    int desc;
 
     argc = rb_scan_args(argc, argv, "02:", to, step, &hash);
     if (!NIL_P(hash)) {
@@ -2587,26 +2598,45 @@ num_step_scan_args(int argc, const VALUE *argv, VALUE *to, VALUE *step)
 	}
 	if (values[1] != Qundef) {
 	    if (argc > 1) rb_raise(rb_eArgError, "step is given twice");
-	    *step = values[1];
+	    *by = values[1];
 	}
     }
+
+    return argc;
+}
+
+static int
+num_step_check_fix_args(int argc, VALUE *to, VALUE *step, VALUE by, int fix_nil, int allow_zero_step)
+{
+    int desc;
+    if (by != Qundef) {
+        *step = by;
+    }
     else {
-	/* compatibility */
-	if (argc > 1 && NIL_P(*step)) {
-	    rb_raise(rb_eTypeError, "step must be numeric");
-	}
-	if (rb_equal(*step, INT2FIX(0))) {
-	    rb_raise(rb_eArgError, "step can't be 0");
-	}
+        /* compatibility */
+        if (argc > 1 && NIL_P(*step)) {
+            rb_raise(rb_eTypeError, "step must be numeric");
+        }
+        if (!allow_zero_step && rb_equal(*step, INT2FIX(0))) {
+            rb_raise(rb_eArgError, "step can't be 0");
+        }
     }
     if (NIL_P(*step)) {
 	*step = INT2FIX(1);
     }
     desc = num_step_negative_p(*step);
-    if (NIL_P(*to)) {
-	*to = desc ? DBL2NUM(-HUGE_VAL) : DBL2NUM(HUGE_VAL);
+    if (fix_nil && NIL_P(*to)) {
+        *to = desc ? DBL2NUM(-HUGE_VAL) : DBL2NUM(HUGE_VAL);
     }
     return desc;
+}
+
+static int
+num_step_scan_args(int argc, const VALUE *argv, VALUE *to, VALUE *step, int fix_nil, int allow_zero_step)
+{
+    VALUE by = Qundef;
+    argc = num_step_extract_args(argc, argv, to, step, &by);
+    return num_step_check_fix_args(argc, to, step, by, fix_nil, allow_zero_step);
 }
 
 static VALUE
@@ -2616,7 +2646,7 @@ num_step_size(VALUE from, VALUE args, VALUE eobj)
     int argc = args ? RARRAY_LENINT(args) : 0;
     const VALUE *argv = args ? RARRAY_CONST_PTR(args) : 0;
 
-    num_step_scan_args(argc, argv, &to, &step);
+    num_step_scan_args(argc, argv, &to, &step, TRUE, FALSE);
 
     return ruby_num_interval_step_size(from, to, step, FALSE);
 }
@@ -2679,9 +2709,26 @@ num_step(int argc, VALUE *argv, VALUE from)
     VALUE to, step;
     int desc, inf;
 
-    RETURN_SIZED_ENUMERATOR(from, argc, argv, num_step_size);
+    if (!rb_block_given_p()) {
+        VALUE by = Qundef;
 
-    desc = num_step_scan_args(argc, argv, &to, &step);
+        num_step_extract_args(argc, argv, &to, &step, &by);
+        if (by != Qundef) {
+            step = by;
+        }
+        if (NIL_P(step)) {
+            step = INT2FIX(1);
+        }
+        if ((NIL_P(to) || rb_obj_is_kind_of(to, rb_cNumeric)) &&
+            rb_obj_is_kind_of(step, rb_cNumeric)) {
+            return rb_arith_seq_new(from, ID2SYM(rb_frame_this_func()), argc, argv,
+                                    num_step_size, from, to, step, FALSE);
+        }
+
+        RETURN_SIZED_ENUMERATOR(from, argc, argv, num_step_size);
+    }
+
+    desc = num_step_scan_args(argc, argv, &to, &step, TRUE, FALSE);
     if (rb_equal(step, INT2FIX(0))) {
 	inf = 1;
     }
@@ -3962,8 +4009,10 @@ fix_pow(VALUE x, VALUE y)
 	    else
 		return INT2FIX(-1);
 	}
-	if (b < 0)
-	    return num_funcall1(rb_rational_raw1(x), idPow, y);
+	if (b < 0) {
+	    if (a == 0) rb_num_zerodiv();
+	    return rb_rational_raw(INT2FIX(1), rb_int_pow(x, LONG2NUM(-b)));
+	}
 
 	if (b == 0) return INT2FIX(1);
 	if (b == 1) return x;
@@ -3979,8 +4028,10 @@ fix_pow(VALUE x, VALUE y)
 	    if (int_even_p(y)) return INT2FIX(1);
 	    else return INT2FIX(-1);
 	}
-	if (rb_num_negative_int_p(y))
-	    return num_funcall1(rb_rational_raw1(x), idPow, y);
+	if (BIGNUM_NEGATIVE_P(y)) {
+	    if (a == 0) rb_num_zerodiv();
+	    return rb_rational_raw(INT2FIX(1), rb_int_pow(x, rb_big_uminus(y)));
+	}
 	if (a == 0) return INT2FIX(0);
 	x = rb_int2big(FIX2LONG(x));
 	return rb_big_pow(x, y);
@@ -3994,7 +4045,7 @@ fix_pow(VALUE x, VALUE y)
 	if (a == 1) return DBL2NUM(1.0);
 	{
 	    if (a < 0 && dy != round(dy))
-		return num_funcall1(rb_complex_raw1(x), idPow, y);
+		return rb_dbl_complex_polar(pow(-(double)a, dy), dy);
 	    return DBL2NUM(pow((double)a, dy));
 	}
     }

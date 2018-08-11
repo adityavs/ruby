@@ -12,6 +12,8 @@
 #include "ruby/vm.h"
 #include "ruby/st.h"
 
+#define vm_exec rb_vm_exec
+
 #include "gc.h"
 #include "vm_core.h"
 #include "vm_debug.h"
@@ -297,7 +299,7 @@ static void vm_collect_usage_register(int reg, int isset);
 #endif
 
 static VALUE vm_make_env_object(const rb_execution_context_t *ec, rb_control_frame_t *cfp);
-extern VALUE vm_invoke_bmethod(rb_execution_context_t *ec, rb_proc_t *proc, VALUE self, int argc, const VALUE *argv, VALUE block_handler);
+extern VALUE rb_vm_invoke_bmethod(rb_execution_context_t *ec, rb_proc_t *proc, VALUE self, int argc, const VALUE *argv, VALUE block_handler);
 static VALUE vm_invoke_proc(rb_execution_context_t *ec, rb_proc_t *proc, VALUE self, int argc, const VALUE *argv, VALUE block_handler);
 
 static VALUE rb_block_param_proxy;
@@ -1168,7 +1170,7 @@ vm_invoke_proc(rb_execution_context_t *ec, rb_proc_t *proc, VALUE self,
 }
 
 MJIT_FUNC_EXPORTED VALUE
-vm_invoke_bmethod(rb_execution_context_t *ec, rb_proc_t *proc, VALUE self,
+rb_vm_invoke_bmethod(rb_execution_context_t *ec, rb_proc_t *proc, VALUE self,
 		  int argc, const VALUE *argv, VALUE block_handler)
 {
     return invoke_block_from_c_proc(ec, proc, self, argc, argv, block_handler, TRUE);
@@ -1182,7 +1184,7 @@ rb_vm_invoke_proc(rb_execution_context_t *ec, rb_proc_t *proc,
     vm_block_handler_verify(passed_block_handler);
 
     if (proc->is_from_method) {
-	return vm_invoke_bmethod(ec, proc, self, argc, argv, passed_block_handler);
+        return rb_vm_invoke_bmethod(ec, proc, self, argc, argv, passed_block_handler);
     }
     else {
 	return vm_invoke_proc(ec, proc, self, argc, argv, passed_block_handler);
@@ -1291,7 +1293,7 @@ rb_source_location(int *pline)
     const rb_execution_context_t *ec = GET_EC();
     const rb_control_frame_t *cfp = rb_vm_get_ruby_level_next_cfp(ec, ec->cfp);
 
-    if (cfp) {
+    if (cfp && cfp->iseq) {
 	if (pline) *pline = rb_vm_get_sourceline(cfp);
 	return rb_iseq_path(cfp->iseq);
     }
@@ -1789,7 +1791,7 @@ hook_before_rewind(rb_execution_context_t *ec, const rb_control_frame_t *cfp, in
  */
 
 static inline VALUE
-vm_exce_handle_exception(rb_execution_context_t *ec, enum ruby_tag_type state,
+vm_exec_handle_exception(rb_execution_context_t *ec, enum ruby_tag_type state,
                          VALUE errinfo, VALUE *initial);
 
 MJIT_FUNC_EXPORTED VALUE
@@ -1811,7 +1813,7 @@ vm_exec(rb_execution_context_t *ec, int mjit_enable_p)
     else {
 	result = ec->errinfo;
         rb_ec_raised_reset(ec, RAISED_STACKOVERFLOW);
-        while ((result = vm_exce_handle_exception(ec, state, result, &initial)) == Qundef) {
+        while ((result = vm_exec_handle_exception(ec, state, result, &initial)) == Qundef) {
             /* caught a jump, exec the handler */
             result = vm_exec_core(ec, initial);
 	  vm_loop_start:
@@ -1826,7 +1828,7 @@ vm_exec(rb_execution_context_t *ec, int mjit_enable_p)
 }
 
 static inline VALUE
-vm_exce_handle_exception(rb_execution_context_t *ec, enum ruby_tag_type state,
+vm_exec_handle_exception(rb_execution_context_t *ec, enum ruby_tag_type state,
                          VALUE errinfo, VALUE *initial)
 {
     struct vm_throw_data *err = (struct vm_throw_data *)errinfo;
@@ -1846,10 +1848,10 @@ vm_exce_handle_exception(rb_execution_context_t *ec, enum ruby_tag_type state,
 
 	while (ec->cfp->pc == 0 || ec->cfp->iseq == 0) {
 	    if (UNLIKELY(VM_FRAME_TYPE(ec->cfp) == VM_FRAME_MAGIC_CFUNC)) {
-		EXEC_EVENT_HOOK(ec, RUBY_EVENT_C_RETURN, ec->cfp->self,
-				rb_vm_frame_method_entry(ec->cfp)->def->original_id,
-				rb_vm_frame_method_entry(ec->cfp)->called_id,
-				rb_vm_frame_method_entry(ec->cfp)->owner, Qnil);
+		EXEC_EVENT_HOOK_AND_POP_FRAME(ec, RUBY_EVENT_C_RETURN, ec->cfp->self,
+					      rb_vm_frame_method_entry(ec->cfp)->def->original_id,
+					      rb_vm_frame_method_entry(ec->cfp)->called_id,
+					      rb_vm_frame_method_entry(ec->cfp)->owner, Qnil);
 		RUBY_DTRACE_CMETHOD_RETURN_HOOK(ec,
 						rb_vm_frame_method_entry(ec->cfp)->owner,
 						rb_vm_frame_method_entry(ec->cfp)->def->original_id);
@@ -2418,6 +2420,7 @@ rb_execution_context_mark(const rb_execution_context_t *ec)
     rb_mark_tbl(ec->local_storage);
     RUBY_MARK_UNLESS_NULL(ec->local_storage_recursive_hash);
     RUBY_MARK_UNLESS_NULL(ec->local_storage_recursive_hash_for_trace);
+    RUBY_MARK_UNLESS_NULL(ec->private_const_reference);
 }
 
 void rb_fiber_mark_self(rb_fiber_t *fib);
@@ -2675,7 +2678,7 @@ m_core_set_postexe(VALUE self)
 
 static VALUE core_hash_merge_ary(VALUE hash, VALUE ary);
 static VALUE core_hash_from_ary(VALUE ary);
-static VALUE core_hash_merge_kwd(int argc, VALUE *argv);
+static VALUE core_hash_merge_kwd(VALUE hash, VALUE kw);
 
 static VALUE
 core_hash_merge(VALUE hash, long argc, const VALUE *argv)
@@ -2746,30 +2749,17 @@ kwmerge_i(VALUE key, VALUE value, VALUE hash)
     return ST_CONTINUE;
 }
 
-static int
-kwcheck_i(VALUE key, VALUE value, VALUE hash)
-{
-    kw_check_symbol(key);
-    return ST_CONTINUE;
-}
-
 static VALUE
-m_core_hash_merge_kwd(int argc, VALUE *argv, VALUE recv)
+m_core_hash_merge_kwd(VALUE recv, VALUE hash, VALUE kw)
 {
-    VALUE hash;
-    REWIND_CFP(hash = core_hash_merge_kwd(argc, argv));
+    REWIND_CFP(hash = core_hash_merge_kwd(hash, kw));
     return hash;
 }
 
 static VALUE
-core_hash_merge_kwd(int argc, VALUE *argv)
+core_hash_merge_kwd(VALUE hash, VALUE kw)
 {
-    VALUE hash, kw;
-    rb_check_arity(argc, 1, 2);
-    hash = argv[0];
-    kw = rb_to_hash_type(argv[argc-1]);
-    if (argc < 2) hash = kw;
-    rb_hash_foreach(kw, argc < 2 ? kwcheck_i : kwmerge_i, hash);
+    rb_hash_foreach(rb_to_hash_type(kw), kwmerge_i, hash);
     return hash;
 }
 
@@ -2777,7 +2767,24 @@ core_hash_merge_kwd(int argc, VALUE *argv)
 static VALUE
 mjit_enabled_p(void)
 {
-    return mjit_init_p ? Qtrue : Qfalse;
+    return mjit_enabled ? Qtrue : Qfalse;
+}
+
+static VALUE
+mjit_pause_m(int argc, VALUE *argv, RB_UNUSED_VAR(VALUE self))
+{
+    VALUE options = Qnil;
+    VALUE wait = Qtrue;
+    rb_scan_args(argc, argv, "0:", &options);
+
+    if (!NIL_P(options)) {
+        static ID keyword_ids[1];
+        if (!keyword_ids[0])
+            keyword_ids[0] = rb_intern("wait");
+        rb_get_kwargs(options, keyword_ids, 0, 1, &wait);
+    }
+
+    return mjit_pause(RTEST(wait));
 }
 
 extern VALUE *rb_gc_stack_start;
@@ -2856,7 +2863,7 @@ Init_VM(void)
     rb_define_method_id(klass, id_core_hash_merge_ary, m_core_hash_merge_ary, 2);
 #endif
     rb_define_method_id(klass, id_core_hash_merge_ptr, m_core_hash_merge_ptr, -1);
-    rb_define_method_id(klass, id_core_hash_merge_kwd, m_core_hash_merge_kwd, -1);
+    rb_define_method_id(klass, id_core_hash_merge_kwd, m_core_hash_merge_kwd, 2);
     rb_define_method_id(klass, idProc, rb_block_proc, 0);
     rb_define_method_id(klass, idLambda, rb_block_lambda, 0);
     rb_obj_freeze(fcore);
@@ -2868,6 +2875,8 @@ Init_VM(void)
     /* RubyVM::MJIT */
     mjit = rb_define_module_under(rb_cRubyVM, "MJIT");
     rb_define_singleton_method(mjit, "enabled?", mjit_enabled_p, 0);
+    rb_define_singleton_method(mjit, "pause", mjit_pause_m, -1);
+    rb_define_singleton_method(mjit, "resume", mjit_resume, 0);
 
     /*
      * Document-class: Thread

@@ -85,11 +85,16 @@ class TestIO < Test::Unit::TestCase
   end
 
   def trapping_usr2
-    @usr1_rcvd  = 0
-    trap(:USR2) { @usr1_rcvd += 1 }
-    yield
+    @usr2_rcvd  = 0
+    r, w = IO.pipe
+    trap(:USR2) do
+      w.write([@usr2_rcvd += 1].pack('L'))
+    end
+    yield r
   ensure
     trap(:USR2, "DEFAULT")
+    w&.close
+    r&.close
   end
 
   def test_pipe
@@ -545,6 +550,7 @@ class TestIO < Test::Unit::TestCase
     def test_copy_stream_no_busy_wait
       # JIT has busy wait on GC. It's hard to test this with JIT.
       skip "MJIT has busy wait on GC. We can't test this with JIT." if RubyVM::MJIT.enabled?
+      skip "multiple threads already active" if Thread.list.size > 1
 
       msg = 'r58534 [ruby-core:80969] [Backport #13533]'
       IO.pipe do |r,w|
@@ -864,7 +870,7 @@ class TestIO < Test::Unit::TestCase
         rescue Errno::EBADF
           skip "nonblocking IO for pipe is not implemented"
         end
-        trapping_usr2 do
+        trapping_usr2 do |rd|
           nr = 30
           begin
             pid = fork do
@@ -878,7 +884,7 @@ class TestIO < Test::Unit::TestCase
             nr.times do
               assert_equal megacontent.bytesize, IO.copy_stream("megasrc", s1)
             end
-            assert_equal(1, @usr1_rcvd)
+            assert_equal(1, rd.read(4).unpack1('L'))
           ensure
             s1.close
             _, status = Process.waitpid2(pid) if pid
@@ -1182,10 +1188,11 @@ class TestIO < Test::Unit::TestCase
 
   def test_copy_stream_to_duplex_io
     result = IO.pipe {|a,w|
-      Thread.start {w.puts "yes"; w.close}
+      th = Thread.start {w.puts "yes"; w.close}
       IO.popen([EnvUtil.rubybin, '-pe$_="#$.:#$_"'], "r+") {|b|
         IO.copy_stream(a, b)
         b.close_write
+        assert_join_threads([th])
         b.read
       }
     }
@@ -2680,7 +2687,7 @@ __END__
     end;
     10.times.map do
       Thread.start do
-        assert_in_out_err([], src) {|stdout, stderr|
+        assert_in_out_err([], src, timeout: 20) {|stdout, stderr|
           assert_no_match(/hi.*hi/, stderr.join, bug3585)
         }
       end
@@ -3548,6 +3555,14 @@ __END__
     end
   end if File::BINARY != 0
 
+  def test_exclusive_mode
+    make_tempfile do |t|
+      assert_raise(Errno::EEXIST){ open(t.path, 'wx'){} }
+      assert_raise(ArgumentError){ open(t.path, 'rx'){} }
+      assert_raise(ArgumentError){ open(t.path, 'ax'){} }
+    end
+  end
+
   def test_race_gets_and_close
     assert_separately([], "#{<<-"begin;"}\n#{<<-"end;"}")
     bug13076 = '[ruby-core:78845] [Bug #13076]'
@@ -3696,6 +3711,7 @@ __END__
     end
 
     def test_write_no_garbage
+      skip "multiple threads already active" if Thread.list.size > 1
       res = {}
       ObjectSpace.count_objects(res) # creates strings on first call
       [ 'foo'.b, '*' * 24 ].each do |buf|
@@ -3791,5 +3807,37 @@ __END__
       assert_same noex, noex.join(20), '"good" writer timeout'
       assert_equal 'done', noex.value ,'r63216'
     end
+  end
+
+  def test_select_leak
+    skip 'MJIT uses too much memory' if RubyVM::MJIT.enabled?
+    # avoid malloc arena explosion from glibc and jemalloc:
+    env = {
+      'MALLOC_ARENA_MAX' => '1',
+      'MALLOC_ARENA_TEST' => '1',
+      'MALLOC_CONF' => 'narenas:1',
+    }
+    assert_no_memory_leak([env], <<-"end;", <<-"end;", rss: true, timeout: 60)
+      r, w = IO.pipe
+      rset = [r]
+      wset = [w]
+      exc = StandardError.new(-"select used to leak on exception")
+      exc.set_backtrace([])
+      Thread.new { IO.select(rset, wset, nil, 0) }.join
+    end;
+      th = Thread.new do
+        begin
+          IO.select(rset, wset)
+        rescue => e
+          retry
+        end while true
+      end
+      50_000.times do
+        Thread.pass until th.stop?
+        th.raise(exc)
+      end
+      th.kill
+      th.join
+    end;
   end
 end

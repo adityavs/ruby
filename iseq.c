@@ -118,15 +118,7 @@ rb_iseq_free(const rb_iseq_t *iseq)
 static VALUE
 rb_vm_insn_addr2insn2(const void *addr)
 {
-    VALUE insn;
-    const void * const *table = rb_vm_get_insns_address_table();
-
-    for (insn = 0; insn < VM_INSTRUCTION_SIZE; insn++) {
-	if (table[insn] == addr) {
-	    return insn;
-	}
-    }
-    rb_bug("rb_vm_insn_addr2insn: invalid insn address: %p", addr);
+    return (VALUE)rb_vm_insn_addr2insn(addr);
 }
 #endif
 
@@ -501,16 +493,16 @@ rb_iseq_insns_info_encode_positions(const rb_iseq_t *iseq)
 #endif
 }
 
+#if VM_INSN_INFO_TABLE_IMPL == 2
 unsigned int *
 rb_iseq_insns_info_decode_positions(const struct rb_iseq_constant_body *body)
 {
-#if VM_INSN_INFO_TABLE_IMPL == 2
     int size = body->insns_info.size;
     int max_pos = body->iseq_size;
     struct succ_index_table *sd = body->insns_info.succ_index_table;
     return succ_index_table_invert(max_pos, sd, size);
-#endif
 }
+#endif
 
 static VALUE
 finish_iseq_build(rb_iseq_t *iseq)
@@ -1783,6 +1775,7 @@ rb_insn_operand_intern(const rb_iseq_t *iseq,
 		CALL_FLAG(BLOCKISEQ);
 		CALL_FLAG(TAILCALL);
 		CALL_FLAG(SUPER);
+		CALL_FLAG(ZSUPER);
 		CALL_FLAG(KWARG);
 		CALL_FLAG(KW_SPLAT);
 		CALL_FLAG(OPT_SEND); /* maybe not reachable */
@@ -2907,6 +2900,8 @@ rb_iseq_trace_set_all(rb_event_flag_t turnon_events)
     rb_objspace_each_objects(trace_set_i, &turnon_events);
 }
 
+/* This is exported since Ruby 2.5 but not internally used for now. If you're going to use this, please
+   update `ruby_vm_event_enabled_flags` and set `mjit_call_p = FALSE` as well to cancel MJIT code. */
 void
 rb_iseq_trace_on_all(void)
 {

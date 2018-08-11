@@ -8,6 +8,7 @@ environment:
   matrix:
     - vs: "120"
 install:
+  - ver
   - chcp
   - SET BITS=%Platform:x86=32%
   - SET BITS=%BITS:x=%
@@ -49,7 +50,7 @@ test_script:
   - set /a JOBS=%NUMBER_OF_PROCESSORS%
   - nmake -l "TESTOPTS=-v -q" btest
   - nmake -l "TESTOPTS=-v -q" test-basic
-  - nmake -l "TESTOPTS=-q -j%JOBS%" test-all
+  - nmake -l "TESTOPTS=-q -j%JOBS%" test-all RUBY_FORCE_TEST_JIT=1
   - nmake -l test-spec
 matrix:
   fast_finish: true
@@ -59,9 +60,29 @@ for:
     only:
       - trunk
   notifications:
-    - provider: Slack
-      incoming_webhook:
+    - provider: Webhook
+      url:
         secure: iMINHMS0nZabaDsxN9omRDsekxzVvAAzEq5ev7lN6vZ6r9zNhl3/F/7POIVyahAwVFpRDeQT/iUugpAGWmOt3eGL/lZIdqiJFZ9DjPSkP68= # #alerts
+      method: POST
+      body: >-
+        {{^isPullRequest}}
+          {
+            "attachments": [
+              {
+                "title": "AppVeyor Build {{projectName}} {{buildVersion}} {{status}}",
+                "fallback": "AppVeyor Build {{projectName}} {{buildVersion}} {{status}}",
+                "title_link": "{{buildUrl}}",
+                "text": "Commit <{{commitUrl}}|{{commitId}}> by {{commitAuthor}} on {{commitDate}}: _{{commitMessage}}_",
+                {{#passed}}
+                  "color": "#44ee44"
+                {{/passed}}
+                {{#failed}}
+                  "color": "#ee4444"
+                {{/failed}}
+              }
+            ]
+          }
+        {{/isPullRequest}}
       on_build_success: false
       on_build_failure: true
       on_build_status_changed: true

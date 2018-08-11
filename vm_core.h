@@ -92,6 +92,24 @@
 
 #define RUBY_NSIG NSIG
 
+#if defined(SIGCLD)
+#  define RUBY_SIGCHLD    (SIGCLD)
+#elif defined(SIGCHLD)
+#  define RUBY_SIGCHLD    (SIGCHLD)
+#else
+#  define RUBY_SIGCHLD    (0)
+#endif
+
+/* platforms with broken or non-existent SIGCHLD work by polling */
+#if defined(__APPLE__)
+#  define SIGCHLD_LOSSY (1)
+#else
+#  define SIGCHLD_LOSSY (0)
+#endif
+
+/* define to 0 to test old code path */
+#define WAITPID_USE_SIGCHLD (RUBY_SIGCHLD || SIGCHLD_LOSSY)
+
 #ifdef HAVE_STDARG_PROTOTYPES
 #include <stdarg.h>
 #define va_init_list(a,b) va_start((a),(b))
@@ -105,9 +123,11 @@
 void *rb_register_sigaltstack(void);
 #  define RB_ALTSTACK_INIT(var) var = rb_register_sigaltstack()
 #  define RB_ALTSTACK_FREE(var) xfree(var)
+#  define RB_ALTSTACK(var)  var
 #else /* noop */
 #  define RB_ALTSTACK_INIT(var)
 #  define RB_ALTSTACK_FREE(var)
+#  define RB_ALTSTACK(var) (0)
 #endif
 
 /*****************/
@@ -144,6 +164,11 @@ void *rb_register_sigaltstack(void);
 #endif /* OPT_STACK_CACHING */
 #endif /* OPT_CALL_THREADED_CODE */
 
+#if OPT_DIRECT_THREADED_CODE || OPT_CALL_THREADED_CODE
+void rb_addr2insn_init(void);
+#else
+static inline void rb_addr2insn_init(void) { }
+#endif
 typedef unsigned long rb_num_t;
 typedef   signed long rb_snum_t;
 
@@ -548,6 +573,9 @@ typedef struct rb_vm_struct {
 #endif
 
     rb_serial_t fork_gen;
+    rb_nativethread_lock_t waitpid_lock;
+    struct list_head waiting_pids; /* PID > 0: <=> struct waitpid_state */
+    struct list_head waiting_grps; /* PID <= 0: <=> struct waitpid_state */
     struct list_head waiting_fds; /* <=> struct waiting_fd */
     struct list_head living_threads;
     VALUE thgroup_default;
@@ -560,7 +588,7 @@ typedef struct rb_vm_struct {
     unsigned int safe_level_: 1;
 
     int trace_running;
-    volatile int sleeper;
+    int sleeper;
 
     /* object management */
     VALUE mark_object_ary;
@@ -781,7 +809,6 @@ typedef struct rb_execution_context_struct {
 
     struct rb_vm_tag *tag;
     struct rb_vm_protect_tag *protect_tag;
-    int raised_flag;
 
     /* interrupt flags */
     rb_atomic_t interrupt_flag;
@@ -809,7 +836,9 @@ typedef struct rb_execution_context_struct {
     VALUE errinfo;
     VALUE passed_block_handler; /* for rb_iterate */
     const rb_callable_method_entry_t *passed_bmethod_me; /* for bmethod */
+    int raised_flag;
     enum method_missing_reason method_missing_reason;
+    VALUE private_const_reference;
 
     /* for GC */
     struct {
@@ -866,7 +895,6 @@ typedef struct rb_thread_struct {
     /* async errinfo queue */
     VALUE pending_interrupt_queue;
     VALUE pending_interrupt_mask_stack;
-    int pending_interrupt_queue_checked;
 
     /* interrupt management */
     rb_nativethread_lock_t interrupt_lock;
@@ -888,10 +916,13 @@ typedef struct rb_thread_struct {
     rb_jmpbuf_t root_jmpbuf;
 
     /* misc */
+    VALUE name;
+    uint32_t running_time_us; /* 12500..800000 */
+
+    /* bit flags */
     unsigned int abort_on_exception: 1;
     unsigned int report_on_exception: 1;
-    uint32_t running_time_us; /* 12500..800000 */
-    VALUE name;
+    unsigned int pending_interrupt_queue_checked: 1;
 } rb_thread_t;
 
 typedef enum {
@@ -987,6 +1018,7 @@ enum vm_call_flag_bits {
     VM_CALL_KW_SPLAT_bit,       /* m(**opts) */
     VM_CALL_TAILCALL_bit,       /* located at tail position */
     VM_CALL_SUPER_bit,          /* super */
+    VM_CALL_ZSUPER_bit,         /* zsuper */
     VM_CALL_OPT_SEND_bit,       /* internal flag */
     VM_CALL__END
 };
@@ -1001,6 +1033,7 @@ enum vm_call_flag_bits {
 #define VM_CALL_KW_SPLAT        (0x01 << VM_CALL_KW_SPLAT_bit)
 #define VM_CALL_TAILCALL        (0x01 << VM_CALL_TAILCALL_bit)
 #define VM_CALL_SUPER           (0x01 << VM_CALL_SUPER_bit)
+#define VM_CALL_ZSUPER          (0x01 << VM_CALL_ZSUPER_bit)
 #define VM_CALL_OPT_SEND        (0x01 << VM_CALL_OPT_SEND_bit)
 
 enum vm_special_object_type {
@@ -1556,6 +1589,8 @@ static inline void
 rb_vm_living_threads_init(rb_vm_t *vm)
 {
     list_head_init(&vm->waiting_fds);
+    list_head_init(&vm->waiting_pids);
+    list_head_init(&vm->waiting_grps);
     list_head_init(&vm->living_threads);
     vm->living_thread_num = 0;
 }
@@ -1617,10 +1652,10 @@ VALUE rb_catch_protect(VALUE t, rb_block_call_func *func, VALUE data, enum ruby_
 #if RUBY_VM_THREAD_MODEL == 2
 RUBY_SYMBOL_EXPORT_BEGIN
 
-extern rb_vm_t *ruby_current_vm_ptr;
-extern rb_execution_context_t *ruby_current_execution_context_ptr;
-extern rb_event_flag_t ruby_vm_event_flags;
-extern rb_event_flag_t ruby_vm_event_enabled_flags;
+RUBY_EXTERN rb_vm_t *ruby_current_vm_ptr;
+RUBY_EXTERN rb_execution_context_t *ruby_current_execution_context_ptr;
+RUBY_EXTERN rb_event_flag_t ruby_vm_event_flags;
+RUBY_EXTERN rb_event_flag_t ruby_vm_event_enabled_flags;
 
 RUBY_SYMBOL_EXPORT_END
 

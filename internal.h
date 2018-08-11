@@ -1083,6 +1083,7 @@ VALUE rb_ary_aref2(VALUE ary, VALUE b, VALUE e);
 size_t rb_ary_memsize(VALUE);
 VALUE rb_to_array_type(VALUE obj);
 VALUE rb_check_to_array(VALUE ary);
+VALUE rb_ary_tmp_new_from_values(VALUE, long, const VALUE *);
 #if defined(__GNUC__) && defined(HAVE_VA_ARGS_MACRO)
 #define rb_ary_new_from_args(n, ...) \
     __extension__ ({ \
@@ -1171,6 +1172,7 @@ VALUE rb_complex_plus(VALUE, VALUE);
 VALUE rb_complex_mul(VALUE, VALUE);
 VALUE rb_complex_abs(VALUE x);
 VALUE rb_complex_sqrt(VALUE x);
+VALUE rb_dbl_complex_polar(double abs, double ang);
 
 /* cont.c */
 VALUE rb_obj_is_fiber(VALUE);
@@ -1189,7 +1191,6 @@ void Init_ext(void);
 
 /* encoding.c */
 ID rb_id_encoding(void);
-void rb_gc_mark_encodings(void);
 #ifdef RUBY_ENCODING_H
 rb_encoding *rb_enc_get_from_index(int index);
 rb_encoding *rb_enc_check_str(VALUE str1, VALUE str2);
@@ -1248,11 +1249,12 @@ NORETURN(void ruby_deprecated_internal_feature(const char *));
 #define DEPRECATED_INTERNAL_FEATURE(func) \
     (ruby_deprecated_internal_feature(func), UNREACHABLE)
 VALUE rb_warning_warn(VALUE mod, VALUE str);
-VALUE rb_warning_string(const char *fmt, ...);
+PRINTF_ARGS(VALUE rb_warning_string(const char *fmt, ...), 1, 2);
 
 /* eval.c */
 VALUE rb_refinement_module_get_refined_class(VALUE module);
 extern ID ruby_static_id_signo, ruby_static_id_status;
+void rb_class_modify_check(VALUE);
 #define id_signo ruby_static_id_signo
 #define id_status ruby_static_id_status
 
@@ -1397,6 +1399,11 @@ VALUE rb_math_sin(VALUE);
 VALUE rb_math_sinh(VALUE);
 VALUE rb_math_sqrt(VALUE);
 
+/* mjit.c */
+extern int mjit_enabled;
+VALUE mjit_pause(int wait_p);
+VALUE mjit_resume(void);
+
 /* newline.c */
 void Init_newline(void);
 
@@ -1460,6 +1467,8 @@ VALUE rb_int_lshift(VALUE x, VALUE y);
 VALUE rb_int_div(VALUE x, VALUE y);
 VALUE rb_int_abs(VALUE num);
 VALUE rb_int_odd_p(VALUE num);
+int rb_int_positive_p(VALUE num);
+int rb_int_negative_p(VALUE num);
 
 static inline VALUE
 rb_num_compare_with_zero(VALUE num, ID mid)
@@ -1680,6 +1689,7 @@ struct rb_execarg {
     unsigned uid_given : 1;
     unsigned gid_given : 1;
     unsigned exception : 1;
+    unsigned nocldwait_prev : 1;
     rb_pid_t pgroup_pgid; /* asis(-1), new pgroup(0), specified pgroup (0<V). */
     VALUE rlimit_limits; /* Qfalse or [[rtype, softlim, hardlim], ...] */
     mode_t umask_mask;
@@ -1733,6 +1743,7 @@ bool rb_reg_start_with_p(VALUE re, VALUE str);
 void rb_backref_set_string(VALUE string, long pos, long len);
 int rb_match_count(VALUE match);
 int rb_match_nth_defined(int nth, VALUE match);
+VALUE rb_reg_new_ary(VALUE ary, int options);
 
 /* signal.c */
 extern int ruby_enable_coredump;
@@ -1802,6 +1813,7 @@ VALUE rb_sym_proc_call(ID mid, int argc, const VALUE *argv, VALUE passed_proc);
 VALUE rb_sym_to_proc(VALUE sym);
 char *rb_str_to_cstr(VALUE str);
 VALUE rb_str_eql(VALUE str1, VALUE str2);
+VALUE rb_obj_as_string_result(VALUE str, VALUE obj);
 
 /* symbol.c */
 #ifdef RUBY_ENCODING_H
@@ -1988,6 +2000,11 @@ enum rb_int_parse_flags {
 };
 VALUE rb_int_parse_cstr(const char *str, ssize_t len, char **endp, size_t *ndigits, int base, int flags);
 
+/* enumerator.c (export) */
+VALUE rb_arith_seq_new(VALUE obj, VALUE meth, int argc, VALUE const *argv,
+                       rb_enumerator_size_func *size_fn,
+                       VALUE beg, VALUE end, VALUE step, int excl);
+
 /* error.c (export) */
 int rb_bug_reporter_add(void (*func)(FILE *, void *), void *data);
 NORETURN(void rb_unexpected_type(VALUE,int));
@@ -2037,6 +2054,9 @@ VALUE rb_gcd_normal(VALUE self, VALUE other);
 VALUE rb_gcd_gmp(VALUE x, VALUE y);
 #endif
 
+/* signal.c (export) */
+int rb_grantpt(int fd);
+
 /* string.c (export) */
 #ifdef RUBY_ENCODING_H
 /* internal use */
@@ -2047,6 +2067,9 @@ VALUE rb_str_upto_endless_each(VALUE, int (*each)(VALUE, VALUE), VALUE);
 
 /* thread.c (export) */
 int ruby_thread_has_gvl_p(void); /* for ext/fiddle/closure.c */
+
+/* time.c (export) */
+void ruby_reset_leap_second_info(void);
 
 /* util.c (export) */
 extern const signed char ruby_digit36_to_number_table[];
@@ -2130,6 +2153,43 @@ rb_obj_builtin_type(VALUE obj)
 #else
 # define BITFIELD(type) unsigned int
 #endif
+
+#if defined(_MSC_VER)
+# define COMPILER_WARNING_PUSH          __pragma(warning(push))
+# define COMPILER_WARNING_POP           __pragma(warning(pop))
+# define COMPILER_WARNING_ERROR(flag)   __pragma(warning(error: flag)))
+# define COMPILER_WARNING_IGNORED(flag) __pragma(warning(suppress: flag)))
+
+#elif defined(__clang__) /* clang 2.6 already had this feature */
+# define COMPILER_WARNING_PUSH          _Pragma("clang diagnostic push")
+# define COMPILER_WARNING_POP           _Pragma("clang diagnostic pop")
+# define COMPILER_WARNING_SPECIFIER(kind, msg) \
+    clang diagnostic kind # msg
+# define COMPILER_WARNING_ERROR(flag) \
+    COMPILER_WARNING_PRAGMA(COMPILER_WARNING_SPECIFIER(error, flag))
+# define COMPILER_WARNING_IGNORED(flag) \
+    COMPILER_WARNING_PRAGMA(COMPILER_WARNING_SPECIFIER(ignored, flag))
+
+#elif GCC_VERSION_SINCE(4, 2, 0)
+/* https://gcc.gnu.org/onlinedocs/gcc-4.2.0/gcc/Diagnostic-Pragmas.html */
+# define COMPILER_WARNING_PUSH          _Pragma("GCC diagnostic push")
+# define COMPILER_WARNING_POP           _Pragma("GCC diagnostic pop")
+# define COMPILER_WARNING_SPECIFIER(kind, msg) \
+    GCC diagnostic kind # msg
+# define COMPILER_WARNING_ERROR(flag) \
+    COMPILER_WARNING_PRAGMA(COMPILER_WARNING_SPECIFIER(error, flag))
+# define COMPILER_WARNING_IGNORED(flag) \
+    COMPILER_WARNING_PRAGMA(COMPILER_WARNING_SPECIFIER(ignored, flag))
+
+#else /* other compilers to follow? */
+# define COMPILER_WARNING_PUSH          /* nop */
+# define COMPILER_WARNING_POP           /* nop */
+# define COMPILER_WARNING_ERROR(flag)   /* nop */
+# define COMPILER_WARNING_IGNORED(flag) /* nop */
+#endif
+
+#define COMPILER_WARNING_PRAGMA(str) COMPILER_WARNING_PRAGMA_(str)
+#define COMPILER_WARNING_PRAGMA_(str) _Pragma(#str)
 
 #if defined(__cplusplus)
 #if 0
