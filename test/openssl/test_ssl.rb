@@ -1,4 +1,4 @@
-# frozen_string_literal: false
+# frozen_string_literal: true
 require_relative "utils"
 
 if defined?(OpenSSL)
@@ -56,6 +56,52 @@ class OpenSSL::TestSSL < OpenSSL::SSLTestCase
     }
   end
 
+  def test_socket_open
+    start_server { |port|
+      begin
+        ssl = OpenSSL::SSL::SSLSocket.open("127.0.0.1", port)
+        ssl.sync_close = true
+        ssl.connect
+
+        ssl.puts "abc"; assert_equal "abc\n", ssl.gets
+      ensure
+        ssl&.close
+      end
+    }
+  end
+
+  def test_socket_open_with_context
+    start_server { |port|
+      begin
+        ctx = OpenSSL::SSL::SSLContext.new
+        ssl = OpenSSL::SSL::SSLSocket.open("127.0.0.1", port, context: ctx)
+        ssl.sync_close = true
+        ssl.connect
+
+        assert_equal ssl.context, ctx
+        ssl.puts "abc"; assert_equal "abc\n", ssl.gets
+      ensure
+        ssl&.close
+      end
+    }
+  end
+
+  def test_socket_open_with_local_address_port_context
+    start_server { |port|
+      begin
+        ctx = OpenSSL::SSL::SSLContext.new
+        ssl = OpenSSL::SSL::SSLSocket.open("127.0.0.1", port, "127.0.0.1", 8000, context: ctx)
+        ssl.sync_close = true
+        ssl.connect
+
+        assert_equal ssl.context, ctx
+        ssl.puts "abc"; assert_equal "abc\n", ssl.gets
+      ensure
+        ssl&.close
+      end
+    }
+  end
+
   def test_add_certificate
     ctx_proc = -> ctx {
       # Unset values set by start_server
@@ -81,7 +127,7 @@ class OpenSSL::TestSSL < OpenSSL::SSLTestCase
     add0_chain_supported = openssl?(1, 0, 2)
 
     if add0_chain_supported
-      ca2_key = Fixtures.pkey("rsa1024")
+      ca2_key = Fixtures.pkey("rsa2048")
       ca2_exts = [
         ["basicConstraints", "CA:TRUE", true],
         ["keyUsage", "cRLSign, keyCertSign", true],
@@ -139,15 +185,21 @@ class OpenSSL::TestSSL < OpenSSL::SSLTestCase
     end
   end
 
+  def test_add_certificate_chain_file
+    pend "The current server.crt seems too short for OpenSSL 1.1.1d or later" if OpenSSL::OPENSSL_VERSION_NUMBER >= 0x10101040
+    ctx = OpenSSL::SSL::SSLContext.new
+    assert ctx.add_certificate_chain_file(Fixtures.file_path("chain", "server.crt"))
+  end
+
   def test_sysread_and_syswrite
     start_server { |port|
       server_connect(port) { |ssl|
-        str = "x" * 100 + "\n"
+        str = +("x" * 100 + "\n")
         ssl.syswrite(str)
         newstr = ssl.sysread(str.bytesize)
         assert_equal(str, newstr)
 
-        buf = ""
+        buf = String.new
         ssl.syswrite(str)
         assert_same buf, ssl.sysread(str.size, buf)
         assert_equal(str, buf)
@@ -155,8 +207,21 @@ class OpenSSL::TestSSL < OpenSSL::SSLTestCase
     }
   end
 
+  # TODO fix this test
+  # def test_sysread_nonblock_and_syswrite_nonblock_keywords
+  #   start_server do |port|
+  #     server_connect(port) do |ssl|
+  #       assert_warning("") do
+  #         ssl.send(:syswrite_nonblock, "12", exception: false)
+  #         ssl.send(:sysread_nonblock, 1, exception: false) rescue nil
+  #         ssl.send(:sysread_nonblock, 1, String.new, exception: false) rescue nil
+  #       end
+  #     end
+  #   end
+  # end
+
   def test_sync_close
-    start_server { |port|
+    start_server do |port|
       begin
         sock = TCPSocket.new("127.0.0.1", port)
         ssl = OpenSSL::SSL::SSLSocket.new(sock)
@@ -179,7 +244,7 @@ class OpenSSL::TestSSL < OpenSSL::SSLTestCase
       ensure
         sock&.close
       end
-    }
+    end
   end
 
   def test_copy_stream
@@ -417,6 +482,29 @@ class OpenSSL::TestSSL < OpenSSL::SSLTestCase
         ssl.close
       end
     }
+  end
+
+  def test_finished_messages
+    server_finished = nil
+    server_peer_finished = nil
+    client_finished = nil
+    client_peer_finished = nil
+
+    start_server(accept_proc: proc { |server|
+      server_finished = server.finished_message
+      server_peer_finished = server.peer_finished_message
+    }) { |port|
+      ctx = OpenSSL::SSL::SSLContext.new
+      ctx.verify_mode = OpenSSL::SSL::VERIFY_NONE
+      server_connect(port, ctx) { |ssl|
+        client_finished = ssl.finished_message
+        client_peer_finished = ssl.peer_finished_message
+        sleep 0.05
+        ssl.send :stop
+      }
+    }
+    assert_equal(server_finished, client_peer_finished)
+    assert_equal(server_peer_finished, client_finished)
   end
 
   def test_sslctx_set_params
@@ -712,7 +800,7 @@ class OpenSSL::TestSSL < OpenSSL::SSLTestCase
 
   def test_tlsext_hostname
     fooctx = OpenSSL::SSL::SSLContext.new
-    fooctx.tmp_dh_callback = proc { Fixtures.pkey_dh("dh1024") }
+    fooctx.tmp_dh_callback = proc { Fixtures.pkey("dh-1") }
     fooctx.cert = @cli_cert
     fooctx.key = @cli_key
 
@@ -764,7 +852,7 @@ class OpenSSL::TestSSL < OpenSSL::SSLTestCase
     ctx2 = OpenSSL::SSL::SSLContext.new
     ctx2.cert = @svr_cert
     ctx2.key = @svr_key
-    ctx2.tmp_dh_callback = proc { Fixtures.pkey_dh("dh1024") }
+    ctx2.tmp_dh_callback = proc { Fixtures.pkey("dh-1") }
     ctx2.servername_cb = lambda { |args| Object.new }
 
     sock1, sock2 = socketpair
@@ -1144,7 +1232,7 @@ if openssl?(1, 0, 2) || libressl?
     ctx1 = OpenSSL::SSL::SSLContext.new
     ctx1.cert = @svr_cert
     ctx1.key = @svr_key
-    ctx1.tmp_dh_callback = proc { Fixtures.pkey_dh("dh1024") }
+    ctx1.tmp_dh_callback = proc { Fixtures.pkey("dh-1") }
     ctx1.alpn_select_cb = -> (protocols) { nil }
     ssl1 = OpenSSL::SSL::SSLSocket.new(sock1, ctx1)
 
@@ -1332,6 +1420,10 @@ end
   end
 
   def test_fallback_scsv
+    supported = check_supported_protocol_versions
+    return unless supported.include?(OpenSSL::SSL::TLS1_1_VERSION) &&
+      supported.include?(OpenSSL::SSL::TLS1_2_VERSION)
+
     pend "Fallback SCSV is not supported" unless \
       OpenSSL::SSL::SSLContext.method_defined?(:enable_fallback_scsv)
 
@@ -1361,7 +1453,12 @@ end
     # Server support better, so refuse the connection
     sock1, sock2 = socketpair
     begin
+      # This test is for the downgrade protection mechanism of TLS1.2.
+      # This is why ctx1 bounds max_version == TLS1.2.
+      # Otherwise, this test fails when using openssl 1.1.1 (or later) that supports TLS1.3.
+      # TODO: We may need another test for TLS1.3 because it seems to have a different mechanism.
       ctx1 = OpenSSL::SSL::SSLContext.new
+      ctx1.max_version = OpenSSL::SSL::TLS1_2_VERSION
       s1 = OpenSSL::SSL::SSLSocket.new(sock1, ctx1)
 
       ctx2 = OpenSSL::SSL::SSLContext.new
@@ -1386,20 +1483,21 @@ end
   def test_dh_callback
     pend "TLS 1.2 is not supported" unless tls12_supported?
 
+    dh = Fixtures.pkey("dh-1")
     called = false
     ctx_proc = -> ctx {
       ctx.ssl_version = :TLSv1_2
       ctx.ciphers = "DH:!NULL"
       ctx.tmp_dh_callback = ->(*args) {
         called = true
-        Fixtures.pkey_dh("dh1024")
+        dh
       }
     }
     start_server(ctx_proc: ctx_proc) do |port|
       server_connect(port) { |ssl|
         assert called, "dh callback should be called"
         if ssl.respond_to?(:tmp_key)
-          assert_equal Fixtures.pkey_dh("dh1024").to_der, ssl.tmp_key.to_der
+          assert_equal dh.to_der, ssl.tmp_key.to_der
         end
       }
     end
@@ -1544,6 +1642,20 @@ end
     }
   end
 
+  def test_fileno
+    ctx = OpenSSL::SSL::SSLContext.new
+    sock1, sock2 = socketpair
+
+    socket = OpenSSL::SSL::SSLSocket.new(sock1)
+    server = OpenSSL::SSL::SSLServer.new(sock2, ctx)
+
+    assert_equal socket.fileno, socket.to_io.fileno
+    assert_equal server.fileno, server.to_io.fileno
+  ensure
+    sock1.close
+    sock2.close
+  end
+
   private
 
   def start_server_version(version, ctx_proc = nil,
@@ -1576,8 +1688,8 @@ end
 
   def assert_handshake_error
     # different OpenSSL versions react differently when facing a SSL/TLS version
-    # that has been marked as forbidden, therefore either of these may be raised
-    assert_raise(OpenSSL::SSL::SSLError, Errno::ECONNRESET) {
+    # that has been marked as forbidden, therefore any of these may be raised
+    assert_raise(OpenSSL::SSL::SSLError, Errno::ECONNRESET, Errno::EPIPE) {
       yield
     }
   end

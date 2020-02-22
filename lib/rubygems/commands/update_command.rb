@@ -68,37 +68,36 @@ command to remove old versions.
     "#{program_name} GEMNAME [GEMNAME ...]"
   end
 
-  def check_latest_rubygems version # :nodoc:
-    if Gem.rubygems_version == version then
+  def check_latest_rubygems(version) # :nodoc:
+    if Gem.rubygems_version == version
       say "Latest version already installed. Done."
       terminate_interaction
     end
-
-    options[:user_install] = false
   end
 
   def check_update_arguments # :nodoc:
-    unless options[:args].empty? then
+    unless options[:args].empty?
       alert_error "Gem names are not allowed with the --system option"
       terminate_interaction 1
     end
   end
 
   def execute
-    if options[:system] then
+    if options[:system]
       update_rubygems
       return
     end
 
-    hig = highest_installed_gems
-
-    gems_to_update = which_to_update hig, options[:args].uniq
+    gems_to_update = which_to_update(
+      highest_installed_gems,
+      options[:args].uniq
+    )
 
     if options[:explain]
       say "Gems to update:"
 
-      gems_to_update.each do |(name, version)|
-        say "  #{name}-#{version}"
+      gems_to_update.each do |name_tuple|
+        say "  #{name_tuple.full_name}"
       end
 
       return
@@ -111,7 +110,7 @@ command to remove old versions.
     updated_names = updated.map { |spec| spec.name }
     not_updated_names = options[:args].uniq - updated_names
 
-    if updated.empty? then
+    if updated.empty?
       say "Nothing to update"
     else
       say "Gems updated: #{updated_names.join(' ')}"
@@ -119,7 +118,7 @@ command to remove old versions.
     end
   end
 
-  def fetch_remote_gems spec # :nodoc:
+  def fetch_remote_gems(spec) # :nodoc:
     dependency = Gem::Dependency.new spec.name, "> #{spec.version}"
     dependency.prerelease = options[:prerelease]
 
@@ -137,8 +136,11 @@ command to remove old versions.
   def highest_installed_gems # :nodoc:
     hig = {} # highest installed gems
 
+    # Get only gem specifications installed as --user-install
+    Gem::Specification.dirs = Gem.user_dir if options[:user_install]
+
     Gem::Specification.each do |spec|
-      if hig[spec.name].nil? or hig[spec.name].version < spec.version then
+      if hig[spec.name].nil? or hig[spec.name].version < spec.version
         hig[spec.name] = spec
       end
     end
@@ -146,21 +148,21 @@ command to remove old versions.
     hig
   end
 
-  def highest_remote_version spec # :nodoc:
+  def highest_remote_name_tuple(spec) # :nodoc:
     spec_tuples = fetch_remote_gems spec
 
     matching_gems = spec_tuples.select do |g,_|
       g.name == spec.name and g.match_platform?
     end
 
-    highest_remote_gem = matching_gems.max_by { |g,_| g.version }
+    highest_remote_gem = matching_gems.max
 
     highest_remote_gem ||= [Gem::NameTuple.null]
 
-    highest_remote_gem.first.version
+    highest_remote_gem.first
   end
 
-  def install_rubygems version # :nodoc:
+  def install_rubygems(version) # :nodoc:
     args = update_rubygems_arguments
 
     update_dir = File.join Gem.dir, 'gems', "rubygems-update-#{version}"
@@ -168,12 +170,31 @@ command to remove old versions.
     Dir.chdir update_dir do
       say "Installing RubyGems #{version}"
 
-      # Make sure old rubygems isn't loaded
-      old = ENV["RUBYOPT"]
-      ENV.delete("RUBYOPT") if old
-      installed = system Gem.ruby, 'setup.rb', *args
+      installed = preparing_gem_layout_for(version) do
+        system Gem.ruby, '--disable-gems', 'setup.rb', *args
+      end
+
       say "RubyGems system software updated" if installed
-      ENV["RUBYOPT"] = old if old
+    end
+  end
+
+  def preparing_gem_layout_for(version)
+    if Gem::Version.new(version) >= Gem::Version.new("3.2.a")
+      yield
+    else
+      require "tmpdir"
+      tmpdir = Dir.mktmpdir
+      FileUtils.mv Gem.plugins_dir, tmpdir
+
+      status = yield
+
+      if status
+        FileUtils.rm_rf tmpdir
+      else
+        FileUtils.mv File.join(tmpdir, "plugins"), Gem.plugins_dir
+      end
+
+      status
     end
   end
 
@@ -181,7 +202,7 @@ command to remove old versions.
     version = options[:system]
     update_latest = version == true
 
-    if update_latest then
+    if update_latest
       version     = Gem::Version.new     Gem::VERSION
       requirement = Gem::Requirement.new ">= #{Gem::VERSION}"
     else
@@ -198,9 +219,9 @@ command to remove old versions.
     }
 
     gems_to_update = which_to_update hig, options[:args], :system
-    _, up_ver   = gems_to_update.first
+    up_ver = gems_to_update.first.version
 
-    target = if update_latest then
+    target = if update_latest
                up_ver
              else
                version
@@ -209,7 +230,7 @@ command to remove old versions.
     return target, requirement
   end
 
-  def update_gem name, version = Gem::Requirement.default
+  def update_gem(name, version = Gem::Requirement.default)
     return if @updated.any? { |spec| spec.name == name }
 
     update_options = options.dup
@@ -229,9 +250,9 @@ command to remove old versions.
     end
   end
 
-  def update_gems gems_to_update
-    gems_to_update.uniq.sort.each do |(name, version)|
-      update_gem name, version
+  def update_gems(gems_to_update)
+    gems_to_update.uniq.sort.each do |name_tuple|
+      update_gem name_tuple.name, name_tuple.version
     end
 
     @updated
@@ -258,9 +279,7 @@ command to remove old versions.
   def update_rubygems_arguments # :nodoc:
     args = []
     args << '--prefix' << Gem.prefix if Gem.prefix
-    # TODO use --document for >= 1.9 , --no-rdoc --no-ri < 1.9
-    args << '--no-rdoc' unless options[:document].include? 'rdoc'
-    args << '--no-ri'   unless options[:document].include? 'ri'
+    args << '--no-document' unless options[:document].include?('rdoc') || options[:document].include?('ri')
     args << '--no-format-executable' if options[:no_format_executable]
     args << '--previous-version' << Gem::VERSION if
       options[:system] == true or
@@ -268,17 +287,19 @@ command to remove old versions.
     args
   end
 
-  def which_to_update highest_installed_gems, gem_names, system = false
+  def which_to_update(highest_installed_gems, gem_names, system = false)
     result = []
 
     highest_installed_gems.each do |l_name, l_spec|
       next if not gem_names.empty? and
               gem_names.none? { |name| name == l_spec.name }
 
-      highest_remote_ver = highest_remote_version l_spec
+      highest_remote_tup = highest_remote_name_tuple l_spec
+      highest_remote_ver = highest_remote_tup.version
+      highest_installed_ver = l_spec.version
 
-      if system or (l_spec.version < highest_remote_ver) then
-        result << [l_spec.name, [l_spec.version, highest_remote_ver].max]
+      if system or (highest_installed_ver < highest_remote_ver)
+        result << Gem::NameTuple.new(l_spec.name, [highest_installed_ver, highest_remote_ver].max, highest_remote_tup.platform)
       end
     end
 

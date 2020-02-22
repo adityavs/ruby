@@ -10,10 +10,10 @@
 # $IPR: httprequest.rb,v 1.64 2003/07/13 17:18:22 gotoyuzo Exp $
 
 require 'uri'
-require 'webrick/httpversion'
-require 'webrick/httpstatus'
-require 'webrick/httputils'
-require 'webrick/cookie'
+require_relative 'httpversion'
+require_relative 'httpstatus'
+require_relative 'httputils'
+require_relative 'cookie'
 
 module WEBrick
 
@@ -445,12 +445,14 @@ module WEBrick
 
     def read_request_line(socket)
       @request_line = read_line(socket, MAX_URI_LENGTH) if socket
+      raise HTTPStatus::EOFError unless @request_line
+
       @request_bytes = @request_line.bytesize
       if @request_bytes >= MAX_URI_LENGTH and @request_line[-1, 1] != LF
         raise HTTPStatus::RequestURITooLarge
       end
+
       @request_time = Time.now
-      raise HTTPStatus::EOFError unless @request_line
       if /^(\S+)\s+(\S++)(?:\s+HTTP\/(\d+\.\d+))?\r?\n/mo =~ @request_line
         @request_method = $1
         @unparsed_uri   = $2
@@ -609,7 +611,12 @@ module WEBrick
       end
       if host_port = self["x-forwarded-host"]
         host_port = host_port.split(",", 2).first
-        @forwarded_host, tmp = host_port.split(":", 2)
+        if host_port =~ /\A(\[[0-9a-fA-F:]+\])(?::(\d+))?\z/
+          @forwarded_host = $1
+          tmp = $2
+        else
+          @forwarded_host, tmp = host_port.split(":", 2)
+        end
         @forwarded_port = (tmp || (@forwarded_proto == "https" ? 443 : 80)).to_i
       end
       if addrs = self["x-forwarded-for"]

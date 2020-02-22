@@ -17,13 +17,6 @@ typedef unsigned long lindex_t;
 typedef VALUE GENTRY;
 typedef rb_iseq_t *ISEQ;
 
-#ifdef __GCC__
-/* TODO: machine dependent prefetch instruction */
-#define PREFETCH(pc)
-#else
-#define PREFETCH(pc)
-#endif
-
 #if VMDEBUG > 0
 #define debugs printf
 #define DEBUG_ENTER_INSN(insn) \
@@ -36,7 +29,7 @@ typedef rb_iseq_t *ISEQ;
 #endif
 
 #define DEBUG_END_INSN() \
-  rb_vmdebug_debug_print_post(th, GET_CFP() SC_REGS());
+  rb_vmdebug_debug_print_post(ec, GET_CFP() SC_REGS());
 
 #else
 
@@ -47,6 +40,10 @@ typedef rb_iseq_t *ISEQ;
 
 #define throwdebug if(0)printf
 /* #define throwdebug printf */
+
+#ifndef USE_INSNS_COUNTER
+#define USE_INSNS_COUNTER 0
+#endif
 
 /************************************************/
 #if defined(DISPATCH_XXX)
@@ -78,27 +75,18 @@ error !
 #define LABEL_PTR(x) RB_GNUC_EXTENSION(&&LABEL(x))
 
 #define INSN_ENTRY_SIG(insn) \
-  if (0) fprintf(stderr, "exec: %s@(%d, %d)@%s:%d\n", #insn, \
-		 (int)(reg_pc - reg_cfp->iseq->body->iseq_encoded), \
-		 (int)(reg_cfp->pc - reg_cfp->iseq->body->iseq_encoded), \
-		 RSTRING_PTR(rb_iseq_path(reg_cfp->iseq)), \
-		 (int)(rb_iseq_line_no(reg_cfp->iseq, reg_pc - reg_cfp->iseq->body->iseq_encoded)));
+  if (0) fprintf(stderr, "exec: %s@(%"PRIdPTRDIFF", %"PRIdPTRDIFF")@%s:%u\n", #insn, \
+                 (reg_pc - reg_cfp->iseq->body->iseq_encoded), \
+                 (reg_cfp->pc - reg_cfp->iseq->body->iseq_encoded), \
+                 RSTRING_PTR(rb_iseq_path(reg_cfp->iseq)), \
+                 rb_iseq_line_no(reg_cfp->iseq, reg_pc - reg_cfp->iseq->body->iseq_encoded)); \
+  if (USE_INSNS_COUNTER) vm_insns_counter_count_insn(BIN(insn));
 
 #define INSN_DISPATCH_SIG(insn)
 
 #define INSN_ENTRY(insn) \
   LABEL(insn): \
   INSN_ENTRY_SIG(insn); \
-
-/* dispatcher */
-#if defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__)) && __GNUC__ == 3
-#define DISPATCH_ARCH_DEPEND_WAY(addr) \
-  __asm__ __volatile__("jmp *%0;\t# -- inserted by vm.h\t[length = 2]" : : "r" (addr))
-
-#else
-#define DISPATCH_ARCH_DEPEND_WAY(addr) \
-				/* do nothing */
-#endif
 
 /**********************************/
 #if OPT_DIRECT_THREADED_CODE
@@ -112,14 +100,22 @@ error !
 #else
 /* token threaded code */
 
+/* dispatcher */
+#if defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__)) && __GNUC__ == 3
+#define DISPATCH_ARCH_DEPEND_WAY(addr) \
+  __asm__ __volatile__("jmp *%0;\t# -- inserted by vm.h\t[length = 2]" : : "r" (addr))
+
+#else
+#define DISPATCH_ARCH_DEPEND_WAY(addr) \
+                                /* do nothing */
+#endif
 #define TC_DISPATCH(insn)  \
   DISPATCH_ARCH_DEPEND_WAY(insns_address_table[GET_CURRENT_INSN()]); \
   INSN_DISPATCH_SIG(insn); \
   RB_GNUC_EXTENSION_BLOCK(goto *insns_address_table[GET_CURRENT_INSN()]); \
   rb_bug("tc error");
 
-
-#endif /* DISPATCH_DIRECT_THREADED_CODE */
+#endif /* OPT_DIRECT_THREADED_CODE */
 
 #define END_INSN(insn)      \
   DEBUG_END_INSN();         \

@@ -55,6 +55,10 @@
 #include "win32/file.h"
 #include "id.h"
 #include "internal.h"
+#include "internal/enc.h"
+#include "internal/object.h"
+#include "internal/static_assert.h"
+#include "internal/stdbool.h"
 #include "encindex.h"
 #define isdirsep(x) ((x) == '/' || (x) == '\\')
 
@@ -119,7 +123,6 @@ static char *w32_getenv(const char *name, UINT cp);
 
 int rb_w32_reparse_symlink_p(const WCHAR *path);
 
-static struct ChildRecord *CreateChild(const WCHAR *, const WCHAR *, SECURITY_ATTRIBUTES *, HANDLE, HANDLE, HANDLE, DWORD);
 static int has_redirection(const char *, UINT);
 int rb_w32_wait_events(HANDLE *events, int num, DWORD timeout);
 static int rb_w32_open_osfhandle(intptr_t osfhandle, int flags);
@@ -352,7 +355,7 @@ flock_winnt(uintptr_t self, int argc, uintptr_t* argv)
 
     memset(&o, 0, sizeof(o));
 
-    switch(oper) {
+    switch (oper) {
       case LOCK_SH:		/* shared lock */
 	LK_ERR(LockFileEx(fh, 0, 0, LK_LEN, LK_LEN, &o), i);
 	break;
@@ -690,7 +693,6 @@ rtc_error_handler(int e, const char *src, int line, const char *exe, const char 
 #endif
 
 static CRITICAL_SECTION select_mutex;
-#define NtSocketsInitialized 1
 static st_table *socklist = NULL;
 static st_table *conlist = NULL;
 #define conlist_disabled ((st_table *)-1)
@@ -729,10 +731,8 @@ constat_delete(HANDLE h)
 static void
 exit_handler(void)
 {
-    if (NtSocketsInitialized) {
-	WSACleanup();
-	DeleteCriticalSection(&select_mutex);
-    }
+    WSACleanup();
+    DeleteCriticalSection(&select_mutex);
     if (uenvarea) {
 	free(uenvarea);
 	uenvarea = NULL;
@@ -1196,33 +1196,27 @@ child_result(struct ChildRecord *child, int mode)
 }
 
 /* License: Ruby's */
-static struct ChildRecord *
-CreateChild(const WCHAR *cmd, const WCHAR *prog, SECURITY_ATTRIBUTES *psa,
-	    HANDLE hInput, HANDLE hOutput, HANDLE hError, DWORD dwCreationFlags)
+static int
+CreateChild(struct ChildRecord *child, const WCHAR *cmd, const WCHAR *prog, HANDLE hInput, HANDLE hOutput, HANDLE hError, DWORD dwCreationFlags)
 {
     BOOL fRet;
     STARTUPINFOW aStartupInfo;
     PROCESS_INFORMATION aProcessInformation;
     SECURITY_ATTRIBUTES sa;
-    struct ChildRecord *child;
 
     if (!cmd && !prog) {
 	errno = EFAULT;
-	return NULL;
+        return FALSE;
     }
 
-    child = FindFreeChildSlot();
     if (!child) {
-	errno = EAGAIN;
-	return NULL;
+        errno = EAGAIN;
+        return FALSE;
     }
 
-    if (!psa) {
-	sa.nLength              = sizeof (SECURITY_ATTRIBUTES);
-	sa.lpSecurityDescriptor = NULL;
-	sa.bInheritHandle       = TRUE;
-	psa = &sa;
-    }
+    sa.nLength              = sizeof(SECURITY_ATTRIBUTES);
+    sa.lpSecurityDescriptor = NULL;
+    sa.bInheritHandle       = TRUE;
 
     memset(&aStartupInfo, 0, sizeof(aStartupInfo));
     memset(&aProcessInformation, 0, sizeof(aProcessInformation));
@@ -1252,19 +1246,19 @@ CreateChild(const WCHAR *cmd, const WCHAR *prog, SECURITY_ATTRIBUTES *psa,
     if (lstrlenW(cmd) > 32767) {
 	child->pid = 0;		/* release the slot */
 	errno = E2BIG;
-	return NULL;
+        return FALSE;
     }
 
     RUBY_CRITICAL {
-	fRet = CreateProcessW(prog, (WCHAR *)cmd, psa, psa,
-			      psa->bInheritHandle, dwCreationFlags, NULL, NULL,
+        fRet = CreateProcessW(prog, (WCHAR *)cmd, &sa, &sa,
+                              sa.bInheritHandle, dwCreationFlags, NULL, NULL,
 			      &aStartupInfo, &aProcessInformation);
 	errno = map_errno(GetLastError());
     }
 
     if (!fRet) {
 	child->pid = 0;		/* release the slot */
-	return NULL;
+        return FALSE;
     }
 
     CloseHandle(aProcessInformation.hThread);
@@ -1272,7 +1266,7 @@ CreateChild(const WCHAR *cmd, const WCHAR *prog, SECURITY_ATTRIBUTES *psa,
     child->hProcess = aProcessInformation.hProcess;
     child->pid = (rb_pid_t)aProcessInformation.dwProcessId;
 
-    return child;
+    return TRUE;
 }
 
 /* License: Ruby's */
@@ -1297,6 +1291,46 @@ is_batch(const char *cmd)
 #define wstr_to_filecp(str, plen) wstr_to_mbstr(filecp(), str, -1, plen)
 #define utf8_to_wstr(str, plen) mbstr_to_wstr(CP_UTF8, str, -1, plen)
 #define wstr_to_utf8(str, plen) wstr_to_mbstr(CP_UTF8, str, -1, plen)
+
+/* License: Ruby's */
+MJIT_FUNC_EXPORTED HANDLE
+rb_w32_start_process(const char *abspath, char *const *argv, int out_fd)
+{
+    /* NOTE: This function is used by MJIT worker, so it can be used parallelly with
+       Ruby's main thread. So functions touching things shared with main thread can't
+       be used, like `ALLOCV` that may trigger GC or `FindFreeChildSlot` that finds
+       a slot from shared memory without atomic locks. */
+    struct ChildRecord child;
+    char *cmd;
+    size_t len;
+    WCHAR *wcmd = NULL, *wprog = NULL;
+    HANDLE outHandle = NULL;
+
+    if (out_fd) {
+        outHandle = (HANDLE)rb_w32_get_osfhandle(out_fd);
+    }
+
+    len = join_argv(NULL, argv, FALSE, filecp(), 1);
+    cmd = alloca(sizeof(char) * len);
+    join_argv(cmd, argv, FALSE, filecp(), 1);
+
+    if (!(wcmd = mbstr_to_wstr(filecp(), cmd, -1, NULL))) {
+        errno = E2BIG;
+        return NULL;
+    }
+    if (!(wprog = mbstr_to_wstr(filecp(), abspath, -1, NULL))) {
+        errno = E2BIG;
+        return NULL;
+    }
+
+    if (!CreateChild(&child, wcmd, wprog, NULL, outHandle, outHandle, 0)) {
+        return NULL;
+    }
+
+    free(wcmd);
+    free(wprog);
+    return child.hProcess;
+}
 
 /* License: Artistic or GPL */
 static rb_pid_t
@@ -1414,7 +1448,10 @@ w32_spawn(int mode, const char *cmd, const char *prog, UINT cp)
     if (v) ALLOCV_END(v);
 
     if (!e) {
-	ret = child_result(CreateChild(wcmd, wshell, NULL, NULL, NULL, NULL, 0), mode);
+        struct ChildRecord *child = FindFreeChildSlot();
+        if (CreateChild(child, wcmd, wshell, NULL, NULL, NULL, 0)) {
+            ret = child_result(child, mode);
+        }
     }
     free(wshell);
     free(wcmd);
@@ -1499,7 +1536,10 @@ w32_aspawn_flags(int mode, const char *prog, char *const *argv, DWORD flags, UIN
     if (!e && prog && !(wprog = mbstr_to_wstr(cp, prog, -1, NULL))) e = E2BIG;
 
     if (!e) {
-	ret = child_result(CreateChild(wcmd, wprog, NULL, NULL, NULL, NULL, flags), mode);
+        struct ChildRecord *child = FindFreeChildSlot();
+        if (CreateChild(child, wcmd, wprog, NULL, NULL, NULL, flags)) {
+            ret = child_result(child, mode);
+        }
     }
     free(wprog);
     free(wcmd);
@@ -2112,6 +2152,7 @@ rb_w32_wstr_to_mbstr(UINT cp, const WCHAR *wstr, int clen, long *plen)
 WCHAR *
 rb_w32_mbstr_to_wstr(UINT cp, const char *str, int clen, long *plen)
 {
+    /* This is used by MJIT worker. Do not trigger GC or call Ruby method here. */
     WCHAR *ptr;
     int len = MultiByteToWideChar(cp, 0, str, clen, NULL, 0);
     if (!(ptr = malloc(sizeof(WCHAR) * len))) return 0;
@@ -2443,6 +2484,7 @@ EXTERN_C _CRTIMP ioinfo * __pioinfo[];
 #endif
 static inline ioinfo* _pioinfo(int);
 
+
 #define IOINFO_ARRAY_ELTS	(1 << IOINFO_L2E)
 #define _osfhnd(i)  (_pioinfo(i)->osfhnd)
 #define _osfile(i)  (_pioinfo(i)->osfile)
@@ -2517,7 +2559,7 @@ set_pioinfo_extra(void)
 #else
     __pioinfo = *(ioinfo***)(p);
 #endif
-#else
+#endif
     int fd;
 
     fd = _open("NUL", O_RDONLY);
@@ -2532,7 +2574,6 @@ set_pioinfo_extra(void)
 	/* not found, maybe something wrong... */
 	pioinfo_extra = 0;
     }
-#endif
 }
 #else
 #define pioinfo_extra 0
@@ -3014,9 +3055,6 @@ do_select(int nfds, fd_set *rd, fd_set *wr, fd_set *ex,
 	    rb_w32_sleep(INFINITE);
     }
     else {
-	if (!NtSocketsInitialized)
-	    StartSockets();
-
 	RUBY_CRITICAL {
 	    EnterCriticalSection(&select_mutex);
 	    r = select(nfds, rd, wr, ex, timeout);
@@ -3242,9 +3280,6 @@ rb_w32_accept(int s, struct sockaddr *addr, int *addrlen)
     SOCKET r;
     int fd;
 
-    if (!NtSocketsInitialized) {
-	StartSockets();
-    }
     RUBY_CRITICAL {
 	r = accept(TO_SOCKET(s), addr, addrlen);
 	if (r != INVALID_SOCKET) {
@@ -3271,9 +3306,6 @@ rb_w32_bind(int s, const struct sockaddr *addr, int addrlen)
 {
     int r;
 
-    if (!NtSocketsInitialized) {
-	StartSockets();
-    }
     RUBY_CRITICAL {
 	r = bind(TO_SOCKET(s), addr, addrlen);
 	if (r == SOCKET_ERROR)
@@ -3289,9 +3321,6 @@ int WSAAPI
 rb_w32_connect(int s, const struct sockaddr *addr, int addrlen)
 {
     int r;
-    if (!NtSocketsInitialized) {
-	StartSockets();
-    }
     RUBY_CRITICAL {
 	r = connect(TO_SOCKET(s), addr, addrlen);
 	if (r == SOCKET_ERROR) {
@@ -3313,9 +3342,6 @@ int WSAAPI
 rb_w32_getpeername(int s, struct sockaddr *addr, int *addrlen)
 {
     int r;
-    if (!NtSocketsInitialized) {
-	StartSockets();
-    }
     RUBY_CRITICAL {
 	r = getpeername(TO_SOCKET(s), addr, addrlen);
 	if (r == SOCKET_ERROR)
@@ -3332,9 +3358,6 @@ rb_w32_getsockname(int fd, struct sockaddr *addr, int *addrlen)
 {
     int sock;
     int r;
-    if (!NtSocketsInitialized) {
-	StartSockets();
-    }
     RUBY_CRITICAL {
 	sock = TO_SOCKET(fd);
 	r = getsockname(sock, addr, addrlen);
@@ -3364,9 +3387,6 @@ int WSAAPI
 rb_w32_getsockopt(int s, int level, int optname, char *optval, int *optlen)
 {
     int r;
-    if (!NtSocketsInitialized) {
-	StartSockets();
-    }
     RUBY_CRITICAL {
 	r = getsockopt(TO_SOCKET(s), level, optname, optval, optlen);
 	if (r == SOCKET_ERROR)
@@ -3382,9 +3402,6 @@ int WSAAPI
 rb_w32_ioctlsocket(int s, long cmd, u_long *argp)
 {
     int r;
-    if (!NtSocketsInitialized) {
-	StartSockets();
-    }
     RUBY_CRITICAL {
 	r = ioctlsocket(TO_SOCKET(s), cmd, argp);
 	if (r == SOCKET_ERROR)
@@ -3400,9 +3417,6 @@ int WSAAPI
 rb_w32_listen(int s, int backlog)
 {
     int r;
-    if (!NtSocketsInitialized) {
-	StartSockets();
-    }
     RUBY_CRITICAL {
 	r = listen(TO_SOCKET(s), backlog);
 	if (r == SOCKET_ERROR)
@@ -3480,9 +3494,6 @@ overlapped_socket_io(BOOL input, int fd, char *buf, int len, int flags,
     WSAOVERLAPPED wol;
     WSABUF wbuf;
     SOCKET s;
-
-    if (!NtSocketsInitialized)
-	StartSockets();
 
     s = TO_SOCKET(fd);
     socklist_lookup(s, &mode);
@@ -3621,9 +3632,6 @@ recvmsg(int fd, struct msghdr *msg, int flags)
     DWORD len;
     int ret;
 
-    if (!NtSocketsInitialized)
-	StartSockets();
-
     s = TO_SOCKET(fd);
 
     if (!pWSARecvMsg) {
@@ -3679,9 +3687,6 @@ sendmsg(int fd, const struct msghdr *msg, int flags)
     DWORD len;
     int ret;
 
-    if (!NtSocketsInitialized)
-	StartSockets();
-
     s = TO_SOCKET(fd);
 
     if (!pWSASendMsg) {
@@ -3724,9 +3729,6 @@ int WSAAPI
 rb_w32_setsockopt(int s, int level, int optname, const char *optval, int optlen)
 {
     int r;
-    if (!NtSocketsInitialized) {
-	StartSockets();
-    }
     RUBY_CRITICAL {
 	r = setsockopt(TO_SOCKET(s), level, optname, optval, optlen);
 	if (r == SOCKET_ERROR)
@@ -3742,9 +3744,6 @@ int WSAAPI
 rb_w32_shutdown(int s, int how)
 {
     int r;
-    if (!NtSocketsInitialized) {
-	StartSockets();
-    }
     RUBY_CRITICAL {
 	r = shutdown(TO_SOCKET(s), how);
 	if (r == SOCKET_ERROR)
@@ -3812,9 +3811,6 @@ rb_w32_socket(int af, int type, int protocol)
     SOCKET s;
     int fd;
 
-    if (!NtSocketsInitialized) {
-	StartSockets();
-    }
     RUBY_CRITICAL {
 	s = open_ifs_socket(af, type, protocol);
 	if (s == INVALID_SOCKET) {
@@ -3839,9 +3835,6 @@ struct hostent * WSAAPI
 rb_w32_gethostbyaddr(const char *addr, int len, int type)
 {
     struct hostent *r;
-    if (!NtSocketsInitialized) {
-	StartSockets();
-    }
     RUBY_CRITICAL {
 	r = gethostbyaddr(addr, len, type);
 	if (r == NULL)
@@ -3857,9 +3850,6 @@ struct hostent * WSAAPI
 rb_w32_gethostbyname(const char *name)
 {
     struct hostent *r;
-    if (!NtSocketsInitialized) {
-	StartSockets();
-    }
     RUBY_CRITICAL {
 	r = gethostbyname(name);
 	if (r == NULL)
@@ -3875,9 +3865,6 @@ int WSAAPI
 rb_w32_gethostname(char *name, int len)
 {
     int r;
-    if (!NtSocketsInitialized) {
-	StartSockets();
-    }
     RUBY_CRITICAL {
 	r = gethostname(name, len);
 	if (r == SOCKET_ERROR)
@@ -3893,9 +3880,6 @@ struct protoent * WSAAPI
 rb_w32_getprotobyname(const char *name)
 {
     struct protoent *r;
-    if (!NtSocketsInitialized) {
-	StartSockets();
-    }
     RUBY_CRITICAL {
 	r = getprotobyname(name);
 	if (r == NULL)
@@ -3911,9 +3895,6 @@ struct protoent * WSAAPI
 rb_w32_getprotobynumber(int num)
 {
     struct protoent *r;
-    if (!NtSocketsInitialized) {
-	StartSockets();
-    }
     RUBY_CRITICAL {
 	r = getprotobynumber(num);
 	if (r == NULL)
@@ -3929,9 +3910,6 @@ struct servent * WSAAPI
 rb_w32_getservbyname(const char *name, const char *proto)
 {
     struct servent *r;
-    if (!NtSocketsInitialized) {
-	StartSockets();
-    }
     RUBY_CRITICAL {
 	r = getservbyname(name, proto);
 	if (r == NULL)
@@ -3947,9 +3925,6 @@ struct servent * WSAAPI
 rb_w32_getservbyport(int port, const char *proto)
 {
     struct servent *r;
-    if (!NtSocketsInitialized) {
-	StartSockets();
-    }
     RUBY_CRITICAL {
 	r = getservbyport(port, proto);
 	if (r == NULL)
@@ -3970,10 +3945,6 @@ socketpair_internal(int af, int type, int protocol, SOCKET *sv)
     struct sockaddr *addr;
     int ret = -1;
     int len;
-
-    if (!NtSocketsInitialized) {
-	StartSockets();
-    }
 
     switch (af) {
       case AF_INET:
@@ -4389,11 +4360,11 @@ fcntl(int fd, int cmd, ...)
 
 /* License: Ruby's */
 int
-rb_w32_set_nonblock(int fd)
+rb_w32_set_nonblock2(int fd, int nonblock)
 {
     SOCKET sock = TO_SOCKET(fd);
     if (is_socket(sock)) {
-	return setfl(sock, O_NONBLOCK);
+	return setfl(sock, nonblock ? O_NONBLOCK : 0);
     }
     else if (is_pipe(sock)) {
 	DWORD state;
@@ -4401,7 +4372,12 @@ rb_w32_set_nonblock(int fd)
 	    errno = map_errno(GetLastError());
 	    return -1;
 	}
-	state |= PIPE_NOWAIT;
+        if (nonblock) {
+            state |= PIPE_NOWAIT;
+        }
+        else {
+            state &= ~PIPE_NOWAIT;
+        }
 	if (!SetNamedPipeHandleState((HANDLE)sock, &state, NULL, NULL)) {
 	    errno = map_errno(GetLastError());
 	    return -1;
@@ -4412,6 +4388,12 @@ rb_w32_set_nonblock(int fd)
 	errno = EBADF;
 	return -1;
     }
+}
+
+int
+rb_w32_set_nonblock(int fd)
+{
+    return rb_w32_set_nonblock2(fd, TRUE);
 }
 
 #ifndef WNOHANG
@@ -5126,6 +5108,9 @@ readlink(const char *path, char *buf, size_t bufsize)
 #ifndef SYMBOLIC_LINK_FLAG_DIRECTORY
 #define SYMBOLIC_LINK_FLAG_DIRECTORY (0x1)
 #endif
+#ifndef SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE
+#define SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE (0x2)
+#endif
 
 /* License: Ruby's */
 static int
@@ -5136,10 +5121,12 @@ w32_symlink(UINT cp, const char *src, const char *link)
     WCHAR *wsrc, *wlink;
     DWORD flag = 0;
     BOOLEAN ret;
+    int e;
 
     typedef BOOLEAN (WINAPI *create_symbolic_link_func)(WCHAR*, WCHAR*, DWORD);
     static create_symbolic_link_func create_symbolic_link =
 	(create_symbolic_link_func)-1;
+    static DWORD create_flag = SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE;
 
     if (create_symbolic_link == (create_symbolic_link_func)-1) {
 	create_symbolic_link = (create_symbolic_link_func)
@@ -5150,6 +5137,14 @@ w32_symlink(UINT cp, const char *src, const char *link)
 	return -1;
     }
 
+    if (!*link) {
+        errno = ENOENT;
+        return -1;
+    }
+    if (!*src) {
+        errno = EINVAL;
+        return -1;
+    }
     len1 = MultiByteToWideChar(cp, 0, src, -1, NULL, 0);
     len2 = MultiByteToWideChar(cp, 0, link, -1, NULL, 0);
     wsrc = ALLOCV_N(WCHAR, buf, len1+len2);
@@ -5161,11 +5156,18 @@ w32_symlink(UINT cp, const char *src, const char *link)
     atts = GetFileAttributesW(wsrc);
     if (atts != -1 && atts & FILE_ATTRIBUTE_DIRECTORY)
 	flag = SYMBOLIC_LINK_FLAG_DIRECTORY;
-    ret = create_symbolic_link(wlink, wsrc, flag);
+    ret = create_symbolic_link(wlink, wsrc, flag |= create_flag);
+    if (!ret &&
+        (e = GetLastError()) == ERROR_INVALID_PARAMETER &&
+        (flag & SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE)) {
+        create_flag = 0;
+        flag &= ~SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE;
+        ret = create_symbolic_link(wlink, wsrc, flag);
+        if (!ret) e = GetLastError();
+    }
     ALLOCV_END(buf);
 
     if (!ret) {
-	int e = GetLastError();
 	errno = map_errno(e);
 	return -1;
     }
@@ -5792,6 +5794,18 @@ int
 rb_w32_lstati128(const char *path, struct stati128 *st)
 {
     return w32_stati128(path, st, filecp(), TRUE);
+}
+
+/* License: Ruby's */
+off_t
+rb_w32_lseek(int fd, off_t ofs, int whence)
+{
+    SOCKET sock = TO_SOCKET(fd);
+    if (is_socket(sock) || is_pipe(sock)) {
+        errno = ESPIPE;
+        return -1;
+    }
+    return _lseeki64(fd, ofs, whence);
 }
 
 /* License: Ruby's */
@@ -6686,7 +6700,8 @@ constat_apply(HANDLE handle, struct constat *s, WCHAR w)
     COORD pos;
 
     if (!GetConsoleScreenBufferInfo(handle, &csbi)) return;
-    if (arg0 = (count > 0 && seq[0] > 0)) arg1 = seq[0];
+    arg0 = (count > 0 && seq[0] > 0);
+    if (arg0) arg1 = seq[0];
     switch (w) {
       case L'm':
 	SetConsoleTextAttribute(handle, constat_attr(count, seq, csbi.wAttributes, s->vt100.attr, &s->vt100.reverse));
@@ -8085,7 +8100,7 @@ rb_w32_set_thread_description_str(HANDLE th, VALUE name)
     return result;
 }
 
-VALUE (*const rb_f_notimplement_)(int, const VALUE *, VALUE) = rb_f_notimplement;
+VALUE (*const rb_f_notimplement_)(int, const VALUE *, VALUE, VALUE) = rb_f_notimplement;
 
 #if RUBY_MSVCRT_VERSION < 120
 #include "missing/nextafter.c"

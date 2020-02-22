@@ -9,15 +9,31 @@
 
 **********************************************************************/
 
-#include "ruby/ruby.h"
+#include "ruby/config.h"
+
+#include <stdio.h>
+
+#include "eval_intern.h"
+#include "id.h"
+#include "internal/signal.h"
+#include "internal/util.h"
 #include "ruby/encoding.h"
 #include "ruby/io.h"
+#include "ruby/ruby.h"
 #include "ruby/util.h"
-#include "vm_debug.h"
-#include "eval_intern.h"
-#include "vm_core.h"
 #include "symbol.h"
-#include "id.h"
+#include "vm_core.h"
+#include "vm_debug.h"
+#include "vm_callinfo.h"
+
+/* This is the only place struct RIMemo is actually used */
+struct RIMemo {
+    VALUE flags;
+    VALUE v0;
+    VALUE v1;
+    VALUE v2;
+    VALUE v3;
+};
 
 /* for gdb */
 const union {
@@ -147,6 +163,7 @@ extern int ruby_w32_rtc_error;
 UINT ruby_w32_codepage[2];
 #endif
 extern int ruby_rgengc_debug;
+extern int ruby_on_ci;
 
 int
 ruby_env_debug_option(const char *str, int len, void *arg)
@@ -192,6 +209,7 @@ ruby_env_debug_option(const char *str, int len, void *arg)
 
     SET_WHEN("gc_stress", *ruby_initial_gc_stress_ptr, Qtrue);
     SET_WHEN("core", ruby_enable_coredump, 1);
+    SET_WHEN("ci", ruby_on_ci, 1);
     if (NAME_MATCH_VALUE("rgengc")) {
 	if (!len) ruby_rgengc_debug = 1;
 	else SET_UINT_LIST("rgengc", &ruby_rgengc_debug, 1);

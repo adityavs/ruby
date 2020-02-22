@@ -1,12 +1,12 @@
 #ifndef RUBY_SOCKET_H
 #define RUBY_SOCKET_H 1
 
-#include "ruby/ruby.h"
-#include "ruby/io.h"
-#include "ruby/thread.h"
-#include "ruby/util.h"
-#include "internal.h"
+#include "ruby/config.h"
+#include RUBY_EXTCONF_H
+
+#include <errno.h>
 #include <stdio.h>
+
 #include <sys/types.h>
 #include <sys/stat.h>
 
@@ -26,7 +26,13 @@
 #  if defined(_MSC_VER)
 #    undef HAVE_TYPE_STRUCT_SOCKADDR_DL
 #  endif
+/*
+ * FIXME: failures if we make nonblocking the default
+ * [ruby-core:89973] [ruby-core:89976] [ruby-core:89977] [Bug #14968]
+ */
+#  define RSOCK_NONBLOCK_DEFAULT (0)
 #else
+#  define RSOCK_NONBLOCK_DEFAULT (0)
 #  include <sys/socket.h>
 #  include <netinet/in.h>
 #  ifdef HAVE_NETINET_IN_SYSTM_H
@@ -50,11 +56,10 @@
 #ifdef HAVE_NETPACKET_PACKET_H
 #  include <netpacket/packet.h>
 #endif
+
 #ifdef HAVE_NET_ETHERNET_H
 #  include <net/ethernet.h>
 #endif
-
-#include <errno.h>
 
 #ifdef HAVE_SYS_UN_H
 #  include <sys/un.h>
@@ -81,12 +86,15 @@
 #  endif
 #  include <ifaddrs.h>
 #endif
+
 #ifdef HAVE_SYS_IOCTL_H
 #  include <sys/ioctl.h>
 #endif
+
 #ifdef HAVE_SYS_SOCKIO_H
 #  include <sys/sockio.h>
 #endif
+
 #ifdef HAVE_NET_IF_H
 #  include <net/if.h>
 #endif
@@ -94,15 +102,39 @@
 #ifdef HAVE_SYS_PARAM_H
 #  include <sys/param.h>
 #endif
+
 #ifdef HAVE_SYS_UCRED_H
 #  include <sys/ucred.h>
 #endif
+
 #ifdef HAVE_UCRED_H
 #  include <ucred.h>
 #endif
+
 #ifdef HAVE_NET_IF_DL_H
 #  include <net/if_dl.h>
 #endif
+
+#ifdef SOCKS5
+#  include <socks.h>
+#endif
+
+#ifndef HAVE_GETADDRINFO
+#  include "addrinfo.h"
+#endif
+
+#include "internal.h"
+#include "internal/array.h"
+#include "internal/error.h"
+#include "internal/gc.h"
+#include "internal/io.h"
+#include "internal/thread.h"
+#include "internal/vm.h"
+#include "ruby/io.h"
+#include "ruby/ruby.h"
+#include "ruby/thread.h"
+#include "ruby/util.h"
+#include "sockport.h"
 
 #ifndef HAVE_TYPE_SOCKLEN_T
 typedef int socklen_t;
@@ -137,11 +169,6 @@ unsigned int if_nametoindex(const char *);
  */
 #define pseudo_AF_FTIP pseudo_AF_RTIP
 
-#ifndef HAVE_GETADDRINFO
-#  include "addrinfo.h"
-#endif
-
-#include "sockport.h"
 
 #ifndef NI_MAXHOST
 #  define NI_MAXHOST 1025
@@ -249,9 +276,7 @@ extern VALUE rb_eSocket;
 
 #ifdef SOCKS
 extern VALUE rb_cSOCKSSocket;
-#  ifdef SOCKS5
-#    include <socks.h>
-#  else
+#  ifndef SOCKS5
 void SOCKSinit();
 int Rconnect();
 #  endif
@@ -408,7 +433,7 @@ NORETURN(void rsock_sys_fail_raddrinfo_or_sockaddr(const char *, VALUE addr, VAL
  * all cases.  For some syscalls (e.g. accept/accept4), blocking on the
  * syscall instead of relying on select/poll allows the kernel to use
  * "wake-one" behavior and avoid the thundering herd problem.
- * This is likely safe on all other *nix-like systems, so this whitelist
+ * This is likely safe on all other *nix-like systems, so this safe list
  * can be expanded by interested parties.
  */
 #if defined(__linux__)
@@ -432,6 +457,8 @@ static inline void rsock_maybe_wait_fd(int fd) { }
 
 VALUE rsock_read_nonblock(VALUE sock, VALUE length, VALUE buf, VALUE ex);
 VALUE rsock_write_nonblock(VALUE sock, VALUE buf, VALUE ex);
+
+void rsock_make_fd_nonblock(int fd);
 
 #if !defined HAVE_INET_NTOP && ! defined _WIN32
 const char *inet_ntop(int, const void *, char *, size_t);

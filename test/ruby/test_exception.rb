@@ -438,16 +438,6 @@ end.join
     assert_not_send([e, :success?], "abort means failure")
   end
 
-  def test_nomethoderror
-    bug3237 = '[ruby-core:29948]'
-    str = "\u2600"
-    id = :"\u2604"
-    msg = "undefined method `#{id}' for \"#{str}\":String"
-    assert_raise_with_message(NoMethodError, msg, bug3237) do
-      str.__send__(id)
-    end
-  end
-
   def test_errno
     assert_equal(Encoding.find("locale"), Errno::EINVAL.new.message.encoding)
   end
@@ -488,20 +478,15 @@ end.join
   end
 
   def test_exception_in_name_error_to_str
+    assert_separately([], "#{<<~"begin;"}\n#{<<~'end;'}")
     bug5575 = '[ruby-core:41612]'
-    Tempfile.create(["test_exception_in_name_error_to_str", ".rb"]) do |t|
-      t.puts <<-EOC
+    begin;
       begin
         BasicObject.new.inspect
       rescue
-        $!.inspect
+        assert_nothing_raised(NameError, bug5575) {$!.inspect}
       end
-    EOC
-      t.close
-      assert_nothing_raised(NameError, bug5575) do
-        load(t.path)
-      end
-    end
+    end;
   end
 
   def test_equal
@@ -511,19 +496,28 @@ end.join
   end
 
   def test_exception_in_exception_equal
+    assert_separately([], "#{<<~"begin;"}\n#{<<~'end;'}")
     bug5865 = '[ruby-core:41979]'
-    Tempfile.create(["test_exception_in_exception_equal", ".rb"]) do |t|
-      t.puts <<-EOC
+    begin;
       o = Object.new
       def o.exception(arg)
       end
-      _ = RuntimeError.new("a") == o
-      EOC
-      t.close
       assert_nothing_raised(ArgumentError, bug5865) do
-        load(t.path)
+        RuntimeError.new("a") == o
       end
+    end;
+  end
+
+  def test_backtrace_by_exception
+    begin
+      line = __LINE__; raise "foo"
+    rescue => e
     end
+    e2 = e.exception("bar")
+    assert_not_equal(e.message, e2.message)
+    assert_equal(e.backtrace, e2.backtrace)
+    loc = e2.backtrace_locations[0]
+    assert_equal([__FILE__, line], [loc.path, loc.lineno])
   end
 
   Bug4438 = '[ruby-core:35364]'
@@ -544,28 +538,6 @@ end.join
       rescue *Array(1)
       end
     end
-  end
-
-  def test_to_s_taintness_propagation
-    for exc in [Exception, NameError]
-      m = "abcdefg"
-      e = exc.new(m)
-      e.taint
-      s = e.to_s
-      assert_equal(false, m.tainted?,
-                   "#{exc}#to_s should not propagate taintness")
-      assert_equal(false, s.tainted?,
-                   "#{exc}#to_s should not propagate taintness")
-    end
-
-    o = Object.new
-    def o.to_str
-      "foo"
-    end
-    o.taint
-    e = NameError.new(o)
-    s = e.to_s
-    assert_equal(false, s.tainted?)
   end
 
   def m
@@ -699,6 +671,16 @@ end.join
     assert_same(a, e.cause.cause)
   end
 
+  def test_cause_at_end
+    errs = [
+      /-: unexpected return\n/,
+      /.*undefined local variable or method `n'.*\n/,
+    ]
+    assert_in_out_err([], <<-'end;', [], errs)
+      END{n}; END{return}
+    end;
+  end
+
   def test_raise_with_cause
     msg = "[Feature #8257]"
     cause = ArgumentError.new("foobar")
@@ -798,7 +780,7 @@ end.join
     e = assert_raise(exc, bug) {raise exc, "foo" => "bar", foo: "bar"}
     assert_equal({"foo" => "bar", foo: "bar"}, e.arg, bug)
 
-    e = assert_raise(exc, bug) {raise exc, "foo" => "bar", foo: "bar", cause: "zzz"}
+    e = assert_raise(exc, bug) {raise exc, "foo" => "bar", foo: "bar", cause: RuntimeError.new("zzz")}
     assert_equal({"foo" => "bar", foo: "bar"}, e.arg, bug)
 
     e = assert_raise(exc, bug) {raise exc, {}}
@@ -836,206 +818,6 @@ end.join
     assert_in_out_err([], "raise Class.new(RuntimeError), 'foo'", [], /foo\n/)
   end
 
-  PrettyObject =
-    Class.new(BasicObject) do
-      alias object_id __id__
-      def pretty_inspect; "`obj'"; end
-      alias inspect pretty_inspect
-    end
-
-  def test_name_error_new_default
-    error = NameError.new
-    assert_equal("NameError", error.message)
-  end
-
-  def test_name_error_new_message
-    error = NameError.new("Message")
-    assert_equal("Message", error.message)
-  end
-
-  def test_name_error_new_name
-    error = NameError.new("Message")
-    assert_nil(error.name)
-
-    error = NameError.new("Message", :foo)
-    assert_equal(:foo, error.name)
-  end
-
-  def test_name_error_new_receiver
-    receiver = Object.new
-
-    error = NameError.new
-    assert_raise(ArgumentError) {error.receiver}
-    assert_equal("NameError", error.message)
-
-    error = NameError.new(receiver: receiver)
-    assert_equal(["NameError", receiver],
-                 [error.message, error.receiver])
-
-    error = NameError.new("Message", :foo, receiver: receiver)
-    assert_equal(["Message", receiver, :foo],
-                 [error.message, error.receiver, error.name])
-  end
-
-  def test_nomethod_error_new_default
-    error = NoMethodError.new
-    assert_equal("NoMethodError", error.message)
-  end
-
-  def test_nomethod_error_new_message
-    error = NoMethodError.new("Message")
-    assert_equal("Message", error.message)
-  end
-
-  def test_nomethod_error_new_name
-    error = NoMethodError.new("Message")
-    assert_nil(error.name)
-
-    error = NoMethodError.new("Message", :foo)
-    assert_equal(:foo, error.name)
-  end
-
-  def test_nomethod_error_new_name_args
-    error = NoMethodError.new("Message", :foo)
-    assert_nil(error.args)
-
-    error = NoMethodError.new("Message", :foo, [1, 2])
-    assert_equal([:foo, [1, 2]], [error.name, error.args])
-  end
-
-  def test_nomethod_error_new_name_args_priv
-    error = NoMethodError.new("Message", :foo, [1, 2])
-    assert_not_predicate(error, :private_call?)
-
-    error = NoMethodError.new("Message", :foo, [1, 2], true)
-    assert_equal([:foo, [1, 2], true],
-                 [error.name, error.args, error.private_call?])
-  end
-
-  def test_nomethod_error_new_receiver
-    receiver = Object.new
-
-    error = NoMethodError.new
-    assert_raise(ArgumentError) {error.receiver}
-
-    error = NoMethodError.new(receiver: receiver)
-    assert_equal(receiver, error.receiver)
-
-    error = NoMethodError.new("Message")
-    assert_raise(ArgumentError) {error.receiver}
-
-    error = NoMethodError.new("Message", receiver: receiver)
-    assert_equal(["Message", receiver],
-                 [error.message, error.receiver])
-
-    error = NoMethodError.new("Message", :foo)
-    assert_raise(ArgumentError) {error.receiver}
-
-    error = NoMethodError.new("Message", :foo, receiver: receiver)
-    assert_equal(["Message", :foo, receiver],
-                 [error.message, error.name, error.receiver])
-
-    error = NoMethodError.new("Message", :foo, [1, 2])
-    assert_raise(ArgumentError) {error.receiver}
-
-    error = NoMethodError.new("Message", :foo, [1, 2], receiver: receiver)
-    assert_equal(["Message", :foo, [1, 2], receiver],
-                 [error.message, error.name, error.args, error.receiver])
-
-    error = NoMethodError.new("Message", :foo, [1, 2], true)
-    assert_raise(ArgumentError) {error.receiver}
-
-    error = NoMethodError.new("Message", :foo, [1, 2], true, receiver: receiver)
-    assert_equal([:foo, [1, 2], true, receiver],
-                 [error.name, error.args, error.private_call?, error.receiver])
-  end
-
-  def test_name_error_info_const
-    obj = PrettyObject.new
-
-    e = assert_raise(NameError) {
-      obj.instance_eval("Object")
-    }
-    assert_equal(:Object, e.name)
-
-    e = assert_raise(NameError) {
-      BasicObject::X
-    }
-    assert_same(BasicObject, e.receiver)
-    assert_equal(:X, e.name)
-  end
-
-  def test_name_error_info_method
-    obj = PrettyObject.new
-
-    e = assert_raise(NameError) {
-      obj.instance_eval {foo}
-    }
-    assert_equal(:foo, e.name)
-    assert_same(obj, e.receiver)
-
-    e = assert_raise(NoMethodError) {
-      obj.foo(1, 2)
-    }
-    assert_equal(:foo, e.name)
-    assert_equal([1, 2], e.args)
-    assert_same(obj, e.receiver)
-    assert_not_predicate(e, :private_call?)
-
-    e = assert_raise(NoMethodError) {
-      obj.instance_eval {foo(1, 2)}
-    }
-    assert_equal(:foo, e.name)
-    assert_equal([1, 2], e.args)
-    assert_same(obj, e.receiver)
-    assert_predicate(e, :private_call?)
-  end
-
-  def test_name_error_info_local_variables
-    obj = PrettyObject.new
-    def obj.test(a, b=nil, *c, &d)
-      e = a
-      1.times {|f| g = foo; g}
-      e
-    end
-
-    e = assert_raise(NameError) {
-      obj.test(3)
-    }
-    assert_equal(:foo, e.name)
-    assert_same(obj, e.receiver)
-    assert_equal(%i[a b c d e f g], e.local_variables.sort)
-  end
-
-  def test_name_error_info_method_missing
-    obj = PrettyObject.new
-    def obj.method_missing(*)
-      super
-    end
-
-    e = assert_raise(NoMethodError) {
-      obj.foo(1, 2)
-    }
-    assert_equal(:foo, e.name)
-    assert_equal([1, 2], e.args)
-    assert_same(obj, e.receiver)
-    assert_not_predicate(e, :private_call?)
-
-    e = assert_raise(NoMethodError) {
-      obj.instance_eval {foo(1, 2)}
-    }
-    assert_equal(:foo, e.name)
-    assert_equal([1, 2], e.args)
-    assert_same(obj, e.receiver)
-    assert_predicate(e, :private_call?)
-  end
-
-  def test_name_error_info_parent_iseq_mark
-    assert_separately(['-', File.join(__dir__, 'bug-11928.rb')], <<-'end;')
-      -> {require ARGV[0]}.call
-    end;
-  end
-
   def test_output_string_encoding
     # "\x82\xa0" in cp932 is "\u3042" (Japanese hiragana 'a')
     # change $stderr to force calling rb_io_write() instead of fwrite()
@@ -1061,6 +843,43 @@ $stderr = $stdout; raise "\x82\xa0"') do |outs, errs, status|
     end;
   end
 
+  def assert_null_char(src, *args, **opts)
+    begin
+      eval(src)
+    rescue => e
+    end
+    assert_not_nil(e)
+    assert_include(e.message, "\0")
+    assert_in_out_err([], src, [], [], *args, **opts) do |_, err,|
+      err.each do |e|
+        assert_not_include(e, "\0")
+      end
+    end
+    e
+  end
+
+  def test_control_in_message
+    bug7574 = '[ruby-dev:46749]'
+    assert_null_char("#{<<~"begin;"}\n#{<<~'end;'}", bug7574)
+    begin;
+      Object.const_defined?("String\0")
+    end;
+    assert_null_char("#{<<~"begin;"}\n#{<<~'end;'}", bug7574)
+    begin;
+      Object.const_get("String\0")
+    end;
+  end
+
+  def test_encoding_in_message
+    name = "\u{e9}t\u{e9}"
+    e = EnvUtil.with_default_external("US-ASCII") do
+      assert_raise(NameError) do
+        Object.const_get(name)
+      end
+    end
+    assert_include(e.message, name)
+  end
+
   def test_method_missing_reason_clear
     bug10969 = '[ruby-core:68515] [Bug #10969]'
     a = Class.new {def method_missing(*) super end}.new
@@ -1078,6 +897,7 @@ $stderr = $stdout; raise "\x82\xa0"') do |outs, errs, status|
 
   def capture_warning_warn
     verbose = $VERBOSE
+    deprecated = Warning[:deprecated]
     warning = []
 
     ::Warning.class_eval do
@@ -1090,11 +910,13 @@ $stderr = $stdout; raise "\x82\xa0"') do |outs, errs, status|
     end
 
     $VERBOSE = true
+    Warning[:deprecated] = true
     yield
 
     return warning
   ensure
     $VERBOSE = verbose
+    Warning[:deprecated] = deprecated
 
     ::Warning.class_eval do
       remove_method :warn
@@ -1122,6 +944,13 @@ $stderr = $stdout; raise "\x82\xa0"') do |outs, errs, status|
     assert_equal("#{__FILE__}:#{__LINE__-1}: warning: test warning\n", warning[0])
     assert_raise(ArgumentError) {warn("test warning", uplevel: -1)}
     assert_in_out_err(["-e", "warn 'ok', uplevel: 1"], '', [], /warning:/)
+    warning = capture_warning_warn {warn("test warning", {uplevel: 0})}
+    assert_match(/test warning.*{:uplevel=>0}/m, warning[0])
+    warning = capture_warning_warn {warn("test warning", **{uplevel: 0})}
+    assert_equal("#{__FILE__}:#{__LINE__-1}: warning: test warning\n", warning[0])
+    warning = capture_warning_warn {warn("test warning", {uplevel: 0}, **{})}
+    assert_equal("test warning\n{:uplevel=>0}\n", warning[0])
+    assert_raise(ArgumentError) {warn("test warning", foo: 1)}
   end
 
   def test_warning_warn_invalid_argument
@@ -1145,10 +974,12 @@ $stderr = $stdout; raise "\x82\xa0"') do |outs, errs, status|
       t.puts "require '#{basename}'"
       t.close
       $LOAD_PATH.push(File.dirname(t))
-      warning = capture_warning_warn {require basename}
+      warning = capture_warning_warn {
+        assert require(basename)
+      }
     ensure
       $LOAD_PATH.pop
-      $LOADED_FEATURES.delete(t)
+      $LOADED_FEATURES.delete(t.path)
     end
     assert_equal(1, warning.size)
     assert_match(/circular require/, warning.first)
@@ -1167,6 +998,13 @@ $stderr = $stdout; raise "\x82\xa0"') do |outs, errs, status|
       $VERBOSE = true
       @a
     };
+  end
+
+  def test_warning_category
+    assert_raise(TypeError) {Warning[nil]}
+    assert_raise(ArgumentError) {Warning[:XXXX]}
+    assert_include([true, false], Warning[:deprecated])
+    assert_include([true, false], Warning[:experimental])
   end
 
   def test_undefined_backtrace
@@ -1310,6 +1148,9 @@ $stderr = $stdout; raise "\x82\xa0"') do |outs, errs, status|
 
     message = e.full_message(highlight: true)
     assert_match(/\e/, message)
+    assert_not_match(/(\e\[1)m\1/, message)
+    e2 = assert_raise(RuntimeError) {raise RuntimeError, "", bt}
+    assert_not_match(/(\e\[1)m\1/, e2.full_message(highlight: true))
 
     message = e.full_message
     if Exception.to_tty?
@@ -1335,9 +1176,26 @@ $stderr = $stdout; raise "\x82\xa0"') do |outs, errs, status|
     assert_in_out_err([], code, [], /Bug14566/, success: false, timeout: 2)
   end
 
+  def test_non_exception_cause
+    assert_raise_with_message(TypeError, /exception/) do
+      raise "foo", cause: 1
+    end;
+  end
+
+  def test_circular_cause_handle
+    assert_raise_with_message(ArgumentError, /circular cause/) do
+      begin
+        raise "error 1"
+      rescue => e1
+        raise "error 2" rescue raise e1, cause: $!
+      end
+    end;
+  end
+
   def test_super_in_method_missing
     assert_separately([], "#{<<~"begin;"}\n#{<<~'end;'}")
     begin;
+      $VERBOSE = nil
       class Object
         def method_missing(name, *args, &block)
           super

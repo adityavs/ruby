@@ -764,6 +764,9 @@ class TestFloat < Test::Unit::TestCase
     assert_raise_with_message(ArgumentError, /xxx/) {
       1.0.round(half: "\0xxx")
     }
+    assert_raise_with_message(Encoding::CompatibilityError, /ASCII incompatible/) {
+      1.0.round(half: "up".force_encoding("utf-16be"))
+    }
   end
 
   def test_Float
@@ -788,7 +791,12 @@ class TestFloat < Test::Unit::TestCase
     assert_raise(ArgumentError) { Float('0xf.p0') }
     assert_raise(ArgumentError) { Float('0xf.f') }
     assert_raise(ArgumentError) { Float('0xf.fp') }
-    assert_equal(Float::INFINITY, Float('0xf.fp1000000000000000'))
+    begin
+      verbose_bak, $VERBOSE = $VERBOSE, nil
+      assert_equal(Float::INFINITY, Float('0xf.fp1000000000000000'))
+    ensure
+      $VERBOSE = verbose_bak
+    end
     assert_equal(1, suppress_warning {Float("1e10_00")}.infinite?)
     assert_raise(TypeError) { Float(nil) }
     assert_raise(TypeError) { Float(:test) }
@@ -800,6 +808,12 @@ class TestFloat < Test::Unit::TestCase
   def test_invalid_str
     bug4310 = '[ruby-core:34820]'
     assert_raise(ArgumentError, bug4310) {under_gc_stress {Float('a'*10000)}}
+  end
+
+  def test_Float_with_invalid_exception
+    assert_raise(ArgumentError) {
+      Float("0", exception: 1)
+    }
   end
 
   def test_Float_with_exception_keyword
@@ -878,7 +892,8 @@ class TestFloat < Test::Unit::TestCase
       a = rand
       b = a+rand*1000
       s = (b - a) / 10
-      assert_equal(10, (a...b).step(s).to_a.length)
+      seq = (a...b).step(s)
+      assert_equal(10, seq.to_a.length, seq.inspect)
     end
 
     assert_equal([1.0, 2.9, 4.8, 6.699999999999999], (1.0...6.8).step(1.9).to_a)

@@ -3,11 +3,22 @@ require_relative 'fixtures/common'
 
 describe "NoMethodError.new" do
   it "allows passing method args" do
-    NoMethodError.new("msg","name","args").args.should == "args"
+    NoMethodError.new("msg", "name", ["args"]).args.should == ["args"]
   end
 
   it "does not require a name" do
     NoMethodError.new("msg").message.should == "msg"
+  end
+
+  ruby_version_is "2.6" do
+    it "accepts a :receiver keyword argument" do
+      receiver = mock("receiver")
+
+      error = NoMethodError.new("msg", :name, receiver: receiver)
+
+      error.receiver.should == receiver
+      error.name.should == :name
+    end
   end
 end
 
@@ -90,6 +101,20 @@ describe "NoMethodError#message" do
       message = e.message
       message.should =~ /undefined method.+\bbar\b/
       message.should include test_class.inspect
+    end
+  end
+end
+
+describe "NoMethodError#dup" do
+  it "copies the name, arguments and receiver" do
+    begin
+      receiver = Object.new
+      receiver.foo(:one, :two)
+    rescue NoMethodError => nme
+      no_method_error_dup = nme.dup
+      no_method_error_dup.name.should == :foo
+      no_method_error_dup.receiver.should == receiver
+      no_method_error_dup.args.should == [:one, :two]
     end
   end
 end

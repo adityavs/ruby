@@ -5,7 +5,7 @@ require "forwardable"
 class CSV
   #
   # A CSV::Table is a two-dimensional data structure for representing CSV
-  # documents.  Tables allow you to work with the data by row or column,
+  # documents. Tables allow you to work with the data by row or column,
   # manipulate the data, and even convert the results back to CSV, if needed.
   #
   # All tables returned by CSV will be constructed from this class, if header
@@ -13,8 +13,13 @@ class CSV
   #
   class Table
     #
-    # Construct a new CSV::Table from +array_of_rows+, which are expected
-    # to be CSV::Row objects.  All rows are assumed to have the same headers.
+    # Constructs a new CSV::Table from +array_of_rows+, which are expected
+    # to be CSV::Row objects. All rows are assumed to have the same headers.
+    #
+    # The optional +headers+ parameter can be set to Array of headers.
+    # If headers aren't set, headers are fetched from CSV::Row objects.
+    # Otherwise, headers() method will return headers being set in
+    # headers argument.
     #
     # A CSV::Table object supports the following Array methods through
     # delegation:
@@ -23,8 +28,17 @@ class CSV
     # * length()
     # * size()
     #
-    def initialize(array_of_rows)
+    def initialize(array_of_rows, headers: nil)
       @table = array_of_rows
+      @headers = headers
+      unless @headers
+        if @table.empty?
+          @headers = []
+        else
+          @headers = @table.first.headers
+        end
+      end
+
       @mode  = :col_or_row
     end
 
@@ -41,11 +55,11 @@ class CSV
     def_delegators :@table, :empty?, :length, :size
 
     #
-    # Returns a duplicate table object, in column mode.  This is handy for
+    # Returns a duplicate table object, in column mode. This is handy for
     # chaining in a single call without changing the table mode, but be aware
     # that this method can consume a fair amount of memory for bigger data sets.
     #
-    # This method returns the duplicate table for chaining.  Don't chain
+    # This method returns the duplicate table for chaining. Don't chain
     # destructive methods (like []=()) this way though, since you are working
     # with a duplicate.
     #
@@ -54,7 +68,7 @@ class CSV
     end
 
     #
-    # Switches the mode of this table to column mode.  All calls to indexing and
+    # Switches the mode of this table to column mode. All calls to indexing and
     # iteration methods will work with columns until the mode is changed again.
     #
     # This method returns the table and is safe to chain.
@@ -66,7 +80,7 @@ class CSV
     end
 
     #
-    # Returns a duplicate table object, in mixed mode.  This is handy for
+    # Returns a duplicate table object, in mixed mode. This is handy for
     # chaining in a single call without changing the table mode, but be aware
     # that this method can consume a fair amount of memory for bigger data sets.
     #
@@ -79,9 +93,9 @@ class CSV
     end
 
     #
-    # Switches the mode of this table to mixed mode.  All calls to indexing and
+    # Switches the mode of this table to mixed mode. All calls to indexing and
     # iteration methods will use the default intelligent indexing system until
-    # the mode is changed again.  In mixed mode an index is assumed to be a row
+    # the mode is changed again. In mixed mode an index is assumed to be a row
     # reference while anything else is assumed to be column access by headers.
     #
     # This method returns the table and is safe to chain.
@@ -106,7 +120,7 @@ class CSV
     end
 
     #
-    # Switches the mode of this table to row mode.  All calls to indexing and
+    # Switches the mode of this table to row mode. All calls to indexing and
     # iteration methods will work with rows until the mode is changed again.
     #
     # This method returns the table and is safe to chain.
@@ -119,11 +133,12 @@ class CSV
 
     #
     # Returns the headers for the first row of this table (assumed to match all
-    # other rows).  An empty Array is returned for empty tables.
+    # other rows). The headers Array passed to CSV::Table.new is returned for
+    # empty tables.
     #
     def headers
       if @table.empty?
-        Array.new
+        @headers.dup
       else
         @table.first.headers
       end
@@ -131,7 +146,7 @@ class CSV
 
     #
     # In the default mixed mode, this method returns rows for index access and
-    # columns for header access.  You can force the index association by first
+    # columns for header access. You can force the index association by first
     # calling by_col!() or by_row!().
     #
     # Columns are returned as an Array of values.  Altering that Array has no
@@ -148,18 +163,18 @@ class CSV
 
     #
     # In the default mixed mode, this method assigns rows for index access and
-    # columns for header access.  You can force the index association by first
+    # columns for header access. You can force the index association by first
     # calling by_col!() or by_row!().
     #
     # Rows may be set to an Array of values (which will inherit the table's
     # headers()) or a CSV::Row.
     #
     # Columns may be set to a single value, which is copied to each row of the
-    # column, or an Array of values.  Arrays of values are assigned to rows top
-    # to bottom in row major order.  Excess values are ignored and if the Array
+    # column, or an Array of values. Arrays of values are assigned to rows top
+    # to bottom in row major order. Excess values are ignored and if the Array
     # does not have a value for each row the extra rows will receive a +nil+.
     #
-    # Assigning to an existing column or row clobbers the data.  Assigning to
+    # Assigning to an existing column or row clobbers the data. Assigning to
     # new columns creates them at the right end of the table.
     #
     def []=(index_or_header, value)
@@ -171,6 +186,10 @@ class CSV
           @table[index_or_header] = value
         end
       else                 # set column
+        unless index_or_header.is_a? Integer
+          index = @headers.index(index_or_header) || @headers.size
+          @headers[index] = index_or_header
+        end
         if value.is_a? Array  # multiple values
           @table.each_with_index do |row, i|
             if row.header_row?
@@ -193,9 +212,9 @@ class CSV
 
     #
     # The mixed mode default is to treat a list of indices as row access,
-    # returning the rows indicated.  Anything else is considered columnar
-    # access.  For columnar access, the return set has an Array for each row
-    # with the values indicated by the headers in each Array.  You can force
+    # returning the rows indicated. Anything else is considered columnar
+    # access. For columnar access, the return set has an Array for each row
+    # with the values indicated by the headers in each Array. You can force
     # column or row mode using by_col!() or by_row!().
     #
     # You cannot mix column and row access.
@@ -215,7 +234,7 @@ class CSV
     end
 
     #
-    # Adds a new row to the bottom end of this table.  You can provide an Array,
+    # Adds a new row to the bottom end of this table. You can provide an Array,
     # which will be converted to a CSV::Row (inheriting the table's headers()),
     # or a CSV::Row.
     #
@@ -232,7 +251,7 @@ class CSV
     end
 
     #
-    # A shortcut for appending multiple rows.  Equivalent to:
+    # A shortcut for appending multiple rows. Equivalent to:
     #
     #   rows.each { |row| self << row }
     #
@@ -245,9 +264,9 @@ class CSV
     end
 
     #
-    # Removes and returns the indicated columns or rows.  In the default mixed
+    # Removes and returns the indicated columns or rows. In the default mixed
     # mode indices refer to rows and everything else is assumed to be a column
-    # headers.  Use by_col!() or by_row!() to force the lookup.
+    # headers. Use by_col!() or by_row!() to force the lookup.
     #
     def delete(*indexes_or_headers)
       if indexes_or_headers.empty?
@@ -258,6 +277,11 @@ class CSV
             (@mode == :col_or_row and index_or_header.is_a? Integer)
           @table.delete_at(index_or_header)
         else                 # by header
+          if index_or_header.is_a? Integer
+            @headers.delete_at(index_or_header)
+          else
+            @headers.delete(index_or_header)
+          end
           @table.map { |row| row.delete(index_or_header).last }
         end
       end
@@ -269,9 +293,9 @@ class CSV
     end
 
     #
-    # Removes any column or row for which the block returns +true+.  In the
+    # Removes any column or row for which the block returns +true+. In the
     # default mixed mode or row mode, iteration is the standard row major
-    # walking of rows.  In column mode, iteration will +yield+ two element
+    # walking of rows. In column mode, iteration will +yield+ two element
     # tuples containing the column name and an Array of values for that column.
     #
     # This method returns the table for chaining.
@@ -297,7 +321,7 @@ class CSV
 
     #
     # In the default mixed mode or row mode, iteration is the standard row major
-    # walking of rows.  In column mode, iteration will +yield+ two element
+    # walking of rows. In column mode, iteration will +yield+ two element
     # tuples containing the column name and an Array of values for that column.
     #
     # This method returns the table for chaining.
@@ -323,7 +347,7 @@ class CSV
     end
 
     #
-    # Returns the table as an Array of Arrays.  Headers will be the first row,
+    # Returns the table as an Array of Arrays. Headers will be the first row,
     # then all of the field rows will follow.
     #
     def to_a
@@ -336,16 +360,16 @@ class CSV
     end
 
     #
-    # Returns the table as a complete CSV String.  Headers will be listed first,
+    # Returns the table as a complete CSV String. Headers will be listed first,
     # then all of the field rows.
     #
     # This method assumes you want the Table.headers(), unless you explicitly
     # pass <tt>:write_headers => false</tt>.
     #
     def to_csv(write_headers: true, **options)
-      array = write_headers ? [headers.to_csv(options)] : []
+      array = write_headers ? [headers.to_csv(**options)] : []
       @table.each do |row|
-        array.push(row.fields.to_csv(options)) unless row.header_row?
+        array.push(row.fields.to_csv(**options)) unless row.header_row?
       end
 
       array.join("")

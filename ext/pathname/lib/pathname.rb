@@ -207,7 +207,7 @@ class Pathname
   # pathnames which points to roots such as <tt>/usr/..</tt>.
   #
   def root?
-    !!(chop_basename(@path) == nil && /#{SEPARATOR_PAT}/o.match?(@path))
+    chop_basename(@path) == nil && /#{SEPARATOR_PAT}/o.match?(@path)
   end
 
   # Predicate method for testing whether a path is absolute.
@@ -503,6 +503,7 @@ class Pathname
   # ArgumentError is raised when it cannot find a relative path.
   #
   def relative_path_from(base_directory)
+    base_directory = Pathname.new(base_directory) unless base_directory.is_a? Pathname
     dest_directory = self.cleanpath.to_s
     base_directory = base_directory.cleanpath.to_s
     dest_prefix = dest_directory

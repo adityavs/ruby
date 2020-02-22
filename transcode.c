@@ -9,10 +9,18 @@
 
 **********************************************************************/
 
-#include "ruby/encoding.h"
-#include "internal.h"
-#include "transcode_data.h"
+#include "ruby/config.h"
+
 #include <ctype.h>
+
+#include "internal.h"
+#include "internal/inits.h"
+#include "internal/object.h"
+#include "internal/string.h"
+#include "internal/transcode.h"
+#include "ruby/encoding.h"
+
+#include "transcode_data.h"
 
 #define ENABLE_ECONV_NEWLINE_OPTION 1
 
@@ -373,9 +381,8 @@ load_transcoder_entry(transcoder_entry_t *entry)
         memcpy(path, transcoder_lib_prefix, sizeof(transcoder_lib_prefix) - 1);
         memcpy(path + sizeof(transcoder_lib_prefix) - 1, lib, len);
         rb_str_set_len(fn, total_len);
-        FL_UNSET(fn, FL_TAINT);
         OBJ_FREEZE(fn);
-        rb_require_safe(fn, rb_safe_level());
+        rb_require_string(fn);
     }
 
     if (entry->transcoder)
@@ -974,21 +981,10 @@ rb_econv_open0(const char *sname, const char *dname, int ecflags)
     int num_trans;
     rb_econv_t *ec;
 
-    int sidx, didx;
-
-    if (*sname) {
-        sidx = rb_enc_find_index(sname);
-        if (0 <= sidx) {
-            rb_enc_from_index(sidx);
-        }
-    }
-
-    if (*dname) {
-        didx = rb_enc_find_index(dname);
-        if (0 <= didx) {
-            rb_enc_from_index(didx);
-        }
-    }
+    /* Just check if sname and dname are defined */
+    /* (This check is needed?) */
+    if (*sname) rb_enc_find_index(sname);
+    if (*dname) rb_enc_find_index(dname);
 
     if (*sname == '\0' && *dname == '\0') {
         num_trans = 0;
@@ -1194,7 +1190,6 @@ rb_trans_conv(rb_econv_t *ec,
     if (ec->elems[0].last_result == econv_after_output)
         ec->elems[0].last_result = econv_source_buffer_empty;
 
-    needreport_index = -1;
     for (i = ec->num_trans-1; 0 <= i; i--) {
         switch (ec->elems[i].last_result) {
           case econv_invalid_byte_sequence:
@@ -1203,7 +1198,6 @@ rb_trans_conv(rb_econv_t *ec,
           case econv_after_output:
           case econv_finished:
             sweep_start = i+1;
-            needreport_index = i;
             goto found_needreport;
 
           case econv_destination_buffer_full:
@@ -1854,7 +1848,6 @@ rb_econv_substr_append(rb_econv_t *ec, VALUE src, long off, long len, VALUE dst,
     src = rb_str_new_frozen(src);
     dst = rb_econv_append(ec, RSTRING_PTR(src) + off, len, dst, flags);
     RB_GC_GUARD(src);
-    OBJ_INFECT_RAW(dst, src);
     return dst;
 }
 
@@ -2425,6 +2418,7 @@ static int
 econv_opts(VALUE opt, int ecflags)
 {
     VALUE v;
+    int newlineflag = 0;
 
     v = rb_hash_aref(opt, sym_invalid);
     if (NIL_P(v)) {
@@ -2470,6 +2464,7 @@ econv_opts(VALUE opt, int ecflags)
 #ifdef ENABLE_ECONV_NEWLINE_OPTION
     v = rb_hash_aref(opt, sym_newline);
     if (!NIL_P(v)) {
+        newlineflag = 2;
 	ecflags &= ~ECONV_NEWLINE_DECORATOR_MASK;
 	if (v == sym_universal) {
 	    ecflags |= ECONV_UNIVERSAL_NEWLINE_DECORATOR;
@@ -2491,10 +2486,9 @@ econv_opts(VALUE opt, int ecflags)
 	    rb_raise(rb_eArgError, "unexpected value for newline option");
 	}
     }
-    else
 #endif
     {
-	int setflags = 0, newlineflag = 0;
+        int setflags = 0;
 
 	v = rb_hash_aref(opt, sym_universal_newline);
 	if (RTEST(v))
@@ -2511,9 +2505,15 @@ econv_opts(VALUE opt, int ecflags)
 	    setflags |= ECONV_CR_NEWLINE_DECORATOR;
 	newlineflag |= !NIL_P(v);
 
-	if (newlineflag) {
+        switch (newlineflag) {
+          case 1:
 	    ecflags &= ~ECONV_NEWLINE_DECORATOR_MASK;
 	    ecflags |= setflags;
+            break;
+
+          case 3:
+            rb_warning(":newline option preceds other newline options");
+            break;
 	}
     }
 
@@ -2925,7 +2925,7 @@ econv_memsize(const void *ptr)
 
 static const rb_data_type_t econv_data_type = {
     "econv",
-    {NULL, econv_free, econv_memsize,},
+    {0, econv_free, econv_memsize,},
     0, 0, RUBY_TYPED_FREE_IMMEDIATELY
 };
 
@@ -3155,8 +3155,12 @@ econv_s_search_convpath(int argc, VALUE *argv, VALUE klass)
     convpath = Qnil;
     transcode_search_path(sname, dname, search_convpath_i, &convpath);
 
-    if (NIL_P(convpath))
-        rb_exc_raise(rb_econv_open_exc(sname, dname, ecflags));
+    if (NIL_P(convpath)) {
+        VALUE exc = rb_econv_open_exc(sname, dname, ecflags);
+        RB_GC_GUARD(snamev);
+        RB_GC_GUARD(dnamev);
+        rb_exc_raise(exc);
+    }
 
     if (decorate_convpath(convpath, ecflags) == -1) {
 	VALUE exc = rb_econv_open_exc(sname, dname, ecflags);
@@ -3789,7 +3793,6 @@ econv_primitive_convert(int argc, VALUE *argv, VALUE self)
     res = rb_econv_convert(ec, &ip, is, &op, os, flags);
     rb_str_set_len(output, op-(unsigned char *)RSTRING_PTR(output));
     if (!NIL_P(input)) {
-        OBJ_INFECT_RAW(output, input);
         rb_str_drop_bytes(input, ip - (unsigned char *)RSTRING_PTR(input));
     }
 
@@ -4080,7 +4083,7 @@ econv_insert_output(VALUE self, VALUE string)
 }
 
 /*
- * call-seq
+ * call-seq:
  *   ec.putback                    -> string
  *   ec.putback(max_numbytes)      -> string
  *
@@ -4111,10 +4114,9 @@ econv_putback(int argc, VALUE *argv, VALUE self)
     int putbackable;
     VALUE str, max;
 
-    rb_scan_args(argc, argv, "01", &max);
-
-    if (NIL_P(max))
+    if (!rb_check_arity(argc, 0, 1) || NIL_P(max = argv[0])) {
         n = rb_econv_putbackable(ec);
+    }
     else {
         n = NUM2INT(max);
         putbackable = rb_econv_putbackable(ec);

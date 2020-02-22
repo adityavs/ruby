@@ -28,10 +28,13 @@ class TestModule < Test::Unit::TestCase
   def setup
     @verbose = $VERBOSE
     $VERBOSE = nil
+    @deprecated = Warning[:deprecated]
+    Warning[:deprecated] = true
   end
 
   def teardown
     $VERBOSE = @verbose
+    Warning[:deprecated] = @deprecated
   end
 
   def test_LT_0
@@ -85,8 +88,11 @@ class TestModule < Test::Unit::TestCase
     private :user3
   end
 
-  module Other
-    def other
+  OtherSetup = -> do
+    remove_const :Other if defined? ::TestModule::Other
+    module Other
+      def other
+      end
     end
   end
 
@@ -220,6 +226,8 @@ class TestModule < Test::Unit::TestCase
   @@class_eval = 'b'
 
   def test_class_eval
+    OtherSetup.call
+
     Other.class_eval("CLASS_EVAL = 1")
     assert_equal(1, Other::CLASS_EVAL)
     assert_include(Other.constants, :CLASS_EVAL)
@@ -294,8 +302,11 @@ class TestModule < Test::Unit::TestCase
   end
 
   def test_nested_get
-    assert_equal Other, Object.const_get([self.class, Other].join('::'))
+    assert_equal Other, Object.const_get([self.class, 'Other'].join('::'))
     assert_equal User::USER, self.class.const_get([User, 'USER'].join('::'))
+    assert_raise(NameError) {
+      Object.const_get([self.class.name, 'String'].join('::'))
+    }
   end
 
   def test_nested_get_symbol
@@ -325,9 +336,12 @@ class TestModule < Test::Unit::TestCase
   end
 
   def test_nested_defined
+    OtherSetup.call
+
     assert_send([Object, :const_defined?, [self.class.name, 'Other'].join('::')])
     assert_send([self.class, :const_defined?, 'User::USER'])
     assert_not_send([self.class, :const_defined?, 'User::Foo'])
+    assert_not_send([Object, :const_defined?, [self.class.name, 'String'].join('::')])
   end
 
   def test_nested_defined_symbol
@@ -338,6 +352,17 @@ class TestModule < Test::Unit::TestCase
     assert_raise(NameError) {self.class.const_defined?(const)}
   end
 
+  def test_nested_defined_inheritance
+    assert_send([Object, :const_defined?, [self.class.name, 'User', 'MIXIN'].join('::')])
+    assert_send([self.class, :const_defined?, 'User::MIXIN'])
+    assert_send([Object, :const_defined?, 'File::SEEK_SET'])
+
+    # const_defined? with `false`
+    assert_not_send([Object, :const_defined?, [self.class.name, 'User', 'MIXIN'].join('::'), false])
+    assert_not_send([self.class, :const_defined?, 'User::MIXIN', false])
+    assert_not_send([Object, :const_defined?, 'File::SEEK_SET', false])
+  end
+
   def test_nested_defined_bad_class
     assert_raise(TypeError) do
       self.class.const_defined?('User::USER::Foo')
@@ -345,6 +370,8 @@ class TestModule < Test::Unit::TestCase
   end
 
   def test_const_set
+    OtherSetup.call
+
     assert_not_operator(Other, :const_defined?, :KOALA)
     Other.const_set(:KOALA, 99)
     assert_operator(Other, :const_defined?, :KOALA)
@@ -403,6 +430,8 @@ class TestModule < Test::Unit::TestCase
   end
 
   def test_dup
+    OtherSetup.call
+
     bug6454 = '[ruby-core:45132]'
 
     a = Module.new
@@ -468,17 +497,47 @@ class TestModule < Test::Unit::TestCase
   end
 
   def test_method_defined?
-    assert !User.method_defined?(:wombat)
-    assert User.method_defined?(:mixin)
-    assert User.method_defined?(:user)
-    assert User.method_defined?(:user2)
-    assert !User.method_defined?(:user3)
+    [User, Class.new{include User}, Class.new{prepend User}].each do |klass|
+      [[], [true]].each do |args|
+        assert !klass.method_defined?(:wombat, *args)
+        assert klass.method_defined?(:mixin, *args)
+        assert klass.method_defined?(:user, *args)
+        assert klass.method_defined?(:user2, *args)
+        assert !klass.method_defined?(:user3, *args)
 
-    assert !User.method_defined?("wombat")
-    assert User.method_defined?("mixin")
-    assert User.method_defined?("user")
-    assert User.method_defined?("user2")
-    assert !User.method_defined?("user3")
+        assert !klass.method_defined?("wombat", *args)
+        assert klass.method_defined?("mixin", *args)
+        assert klass.method_defined?("user", *args)
+        assert klass.method_defined?("user2", *args)
+        assert !klass.method_defined?("user3", *args)
+      end
+    end
+  end
+
+  def test_method_defined_without_include_super
+    assert User.method_defined?(:user, false)
+    assert !User.method_defined?(:mixin, false)
+    assert Mixin.method_defined?(:mixin, false)
+
+    User.const_set(:FOO, c = Class.new)
+
+    c.prepend(User)
+    assert !c.method_defined?(:user, false)
+    c.define_method(:user){}
+    assert c.method_defined?(:user, false)
+
+    assert !c.method_defined?(:mixin, false)
+    c.define_method(:mixin){}
+    assert c.method_defined?(:mixin, false)
+
+    assert !c.method_defined?(:userx, false)
+    c.define_method(:userx){}
+    assert c.method_defined?(:userx, false)
+
+    # cleanup
+    User.class_eval do
+      remove_const :FOO
+    end
   end
 
   def module_exec_aux
@@ -509,6 +568,14 @@ class TestModule < Test::Unit::TestCase
       def dynamically_added_method_4; end
     end
     assert_method_defined?(User, :dynamically_added_method_4)
+
+    # cleanup
+    User.class_eval do
+      remove_method :dynamically_added_method_1
+      remove_method :dynamically_added_method_2
+      remove_method :dynamically_added_method_3
+      remove_method :dynamically_added_method_4
+    end
   end
 
   def test_module_eval
@@ -523,6 +590,28 @@ class TestModule < Test::Unit::TestCase
     assert_equal("Integer", Integer.name)
     assert_equal("TestModule::Mixin",  Mixin.name)
     assert_equal("TestModule::User",   User.name)
+
+    assert_predicate Integer.name, :frozen?
+    assert_predicate Mixin.name, :frozen?
+    assert_predicate User.name, :frozen?
+  end
+
+  def test_accidental_singleton_naming_with_module
+    o = Object.new
+    assert_nil(o.singleton_class.name)
+    class << o
+      module Hi; end
+    end
+    assert_nil(o.singleton_class.name)
+  end
+
+  def test_accidental_singleton_naming_with_class
+    o = Object.new
+    assert_nil(o.singleton_class.name)
+    class << o
+      class Hi; end
+    end
+    assert_nil(o.singleton_class.name)
   end
 
   def test_classpath
@@ -544,6 +633,8 @@ class TestModule < Test::Unit::TestCase
     assert_equal(prefix+"N", m.const_get(:N).name)
     assert_equal(prefix+"O", m.const_get(:O).name)
     assert_equal(prefix+"C", m.const_get(:C).name)
+    c = m.class_eval("Bug15891 = Class.new.freeze")
+    assert_equal(prefix+"Bug15891", c.name)
   end
 
   def test_private_class_method
@@ -584,6 +675,10 @@ class TestModule < Test::Unit::TestCase
     Object.module_eval "WALTER = 99"
     c2 = Module.constants
     assert_equal([:WALTER], c2 - c1)
+
+    Object.class_eval do
+      remove_const :WALTER
+    end
 
     assert_equal([], Module.constants(true))
     assert_equal([], Module.constants(false))
@@ -663,6 +758,32 @@ class TestModule < Test::Unit::TestCase
     assert_equal(false, o.respond_to?(:bar=))
   end
 
+  def test_attr_public_at_toplevel
+    s = Object.new
+    TOPLEVEL_BINDING.eval(<<-END).call(s.singleton_class)
+      proc do |c|
+        c.send(:attr_accessor, :x)
+        c.send(:attr, :y)
+        c.send(:attr_reader, :z)
+        c.send(:attr_writer, :w)
+      end
+    END
+    assert_nil s.x
+    s.x = 1
+    assert_equal 1, s.x
+
+    assert_nil s.y
+    s.instance_variable_set(:@y, 2)
+    assert_equal 2, s.y
+
+    assert_nil s.z
+    s.instance_variable_set(:@z, 3)
+    assert_equal 3, s.z
+
+    s.w = 4
+    assert_equal 4, s.instance_variable_get(:@w)
+  end
+
   def test_const_get_evaled
     c1 = Class.new
     c2 = Class.new(c1)
@@ -720,10 +841,6 @@ class TestModule < Test::Unit::TestCase
     assert_raise(NameError) { c1.const_get(:foo) }
     bug5084 = '[ruby-dev:44200]'
     assert_raise(TypeError, bug5084) { c1.const_get(1) }
-    bug7574 = '[ruby-dev:46749]'
-    assert_raise_with_message(NameError, "wrong constant name \"String\\u0000\"", bug7574) {
-      Object.const_get("String\0")
-    }
   end
 
   def test_const_defined_invalid_name
@@ -731,10 +848,6 @@ class TestModule < Test::Unit::TestCase
     assert_raise(NameError) { c1.const_defined?(:foo) }
     bug5084 = '[ruby-dev:44200]'
     assert_raise(TypeError, bug5084) { c1.const_defined?(1) }
-    bug7574 = '[ruby-dev:46749]'
-    assert_raise_with_message(NameError, "wrong constant name \"String\\u0000\"", bug7574) {
-      Object.const_defined?("String\0")
-    }
   end
 
   def test_const_get_no_inherited
@@ -974,8 +1087,8 @@ class TestModule < Test::Unit::TestCase
   end
 
   def test_method_defined
-    c = Class.new
-    c.class_eval do
+    cl = Class.new
+    def_methods = proc do
       def foo; end
       def bar; end
       def baz; end
@@ -983,33 +1096,47 @@ class TestModule < Test::Unit::TestCase
       protected :bar
       private :baz
     end
+    cl.class_eval(&def_methods)
+    sc = Class.new(cl)
+    mod = Module.new(&def_methods)
+    only_prepend = Class.new{prepend(mod)}
+    empty_prepend = cl.clone
+    empty_prepend.prepend(Module.new)
+    overlap_prepend = cl.clone
+    overlap_prepend.prepend(mod)
 
-    assert_equal(true, c.public_method_defined?(:foo))
-    assert_equal(false, c.public_method_defined?(:bar))
-    assert_equal(false, c.public_method_defined?(:baz))
+    [[], [true], [false]].each do |args|
+      [cl, sc, only_prepend, empty_prepend, overlap_prepend].each do |c|
+        always_false = [sc, only_prepend].include?(c) && args == [false]
 
-    # Test if string arguments are converted to symbols
-    assert_equal(true, c.public_method_defined?("foo"))
-    assert_equal(false, c.public_method_defined?("bar"))
-    assert_equal(false, c.public_method_defined?("baz"))
+        assert_equal(always_false ? false : true, c.public_method_defined?(:foo, *args))
+        assert_equal(always_false ? false : false, c.public_method_defined?(:bar, *args))
+        assert_equal(always_false ? false : false, c.public_method_defined?(:baz, *args))
 
-    assert_equal(false, c.protected_method_defined?(:foo))
-    assert_equal(true, c.protected_method_defined?(:bar))
-    assert_equal(false, c.protected_method_defined?(:baz))
+        # Test if string arguments are converted to symbols
+        assert_equal(always_false ? false : true, c.public_method_defined?("foo", *args))
+        assert_equal(always_false ? false : false, c.public_method_defined?("bar", *args))
+        assert_equal(always_false ? false : false, c.public_method_defined?("baz", *args))
 
-    # Test if string arguments are converted to symbols
-    assert_equal(false, c.protected_method_defined?("foo"))
-    assert_equal(true, c.protected_method_defined?("bar"))
-    assert_equal(false, c.protected_method_defined?("baz"))
+        assert_equal(always_false ? false : false, c.protected_method_defined?(:foo, *args))
+        assert_equal(always_false ? false : true, c.protected_method_defined?(:bar, *args))
+        assert_equal(always_false ? false : false, c.protected_method_defined?(:baz, *args))
 
-    assert_equal(false, c.private_method_defined?(:foo))
-    assert_equal(false, c.private_method_defined?(:bar))
-    assert_equal(true, c.private_method_defined?(:baz))
+        # Test if string arguments are converted to symbols
+        assert_equal(always_false ? false : false, c.protected_method_defined?("foo", *args))
+        assert_equal(always_false ? false : true, c.protected_method_defined?("bar", *args))
+        assert_equal(always_false ? false : false, c.protected_method_defined?("baz", *args))
 
-    # Test if string arguments are converted to symbols
-    assert_equal(false, c.private_method_defined?("foo"))
-    assert_equal(false, c.private_method_defined?("bar"))
-    assert_equal(true, c.private_method_defined?("baz"))
+        assert_equal(always_false ? false : false, c.private_method_defined?(:foo, *args))
+        assert_equal(always_false ? false : false, c.private_method_defined?(:bar, *args))
+        assert_equal(always_false ? false : true, c.private_method_defined?(:baz, *args))
+
+        # Test if string arguments are converted to symbols
+        assert_equal(always_false ? false : false, c.private_method_defined?("foo", *args))
+        assert_equal(always_false ? false : false, c.private_method_defined?("bar", *args))
+        assert_equal(always_false ? false : true, c.private_method_defined?("baz", *args))
+      end
+    end
   end
 
   def test_top_public_private
@@ -1298,6 +1425,17 @@ class TestModule < Test::Unit::TestCase
     assert_match(/: warning: previous definition of foo/, stderr)
   end
 
+  def test_module_function_inside_method
+    assert_warn(/calling module_function without arguments inside a method may not have the intended effect/, '[ruby-core:79751]') do
+      Module.new do
+        def self.foo
+          module_function
+        end
+        foo
+      end
+    end
+  end
+
   def test_protected_singleton_method
     klass = Class.new
     x = klass.new
@@ -1473,6 +1611,8 @@ class TestModule < Test::Unit::TestCase
     assert_warn(/#{c}::FOO is deprecated/) {Class.new(c)::FOO}
     bug12382 = '[ruby-core:75505] [Bug #12382]'
     assert_warn(/deprecated/, bug12382) {c.class_eval "FOO"}
+    Warning[:deprecated] = false
+    assert_warn('') {c::FOO}
   end
 
   NIL = nil
@@ -2030,20 +2170,19 @@ class TestModule < Test::Unit::TestCase
       $foo
       \u3042$
     ].each do |name|
-      assert_raise_with_message(NameError, /#{Regexp.quote(quote(name))}/) do
+      e = assert_raise(NameError) do
         Module.new { attr_accessor name.to_sym }
       end
+      assert_equal(name, e.name.to_s)
     end
-  end
-
-  private def quote(name)
-    encoding = Encoding.default_internal || Encoding.default_external
-    (name.encoding == encoding || name.ascii_only?) ? name : name.inspect
   end
 
   class AttrTest
     class << self
       attr_accessor :cattr
+      def reset
+        self.cattr = nil
+      end
     end
     attr_accessor :iattr
     def ivar
@@ -2086,6 +2225,8 @@ class TestModule < Test::Unit::TestCase
     assert_warning '' do
       assert_equal(42, AttrTest.cattr)
     end
+
+    AttrTest.reset
   end
 
   def test_uninitialized_attr_non_object
@@ -2252,7 +2393,10 @@ class TestModule < Test::Unit::TestCase
 
   def test_inspect_segfault
     bug_10282 = '[ruby-core:65214] [Bug #10282]'
-    assert_separately [], <<-RUBY
+    assert_separately [], "#{<<~"begin;"}\n#{<<~'end;'}"
+    bug_10282 = "#{bug_10282}"
+    begin;
+      line = __LINE__ + 2
       module ShallowInspect
         def shallow_inspect
           "foo"
@@ -2269,9 +2413,9 @@ class TestModule < Test::Unit::TestCase
 
       A.prepend InspectIsShallow
 
-      expect = "#<Method: A(ShallowInspect)#inspect(shallow_inspect)>"
-      assert_equal expect, A.new.method(:inspect).inspect, "#{bug_10282}"
-    RUBY
+      expect = "#<Method: A(ShallowInspect)#inspect(shallow_inspect)() -:#{line}>"
+      assert_equal expect, A.new.method(:inspect).inspect, bug_10282
+    end;
   end
 
   def test_define_method_with_unbound_method
@@ -2295,15 +2439,17 @@ class TestModule < Test::Unit::TestCase
 
   def test_redefinition_mismatch
     m = Module.new
-    m.module_eval "A = 1"
-    assert_raise_with_message(TypeError, /is not a module/) {
+    m.module_eval "A = 1", __FILE__, line = __LINE__
+    e = assert_raise_with_message(TypeError, /is not a module/) {
       m.module_eval "module A; end"
     }
+    assert_include(e.message, "#{__FILE__}:#{line}: previous definition")
     n = "M\u{1f5ff}"
-    m.module_eval "#{n} = 42"
-    assert_raise_with_message(TypeError, "#{n} is not a module") {
+    m.module_eval "#{n} = 42", __FILE__, line = __LINE__
+    e = assert_raise_with_message(TypeError, /#{n} is not a module/) {
       m.module_eval "module #{n}; end"
     }
+    assert_include(e.message, "#{__FILE__}:#{line}: previous definition")
 
     assert_separately([], <<-"end;")
       Etc = (class C\u{1f5ff}; self; end).new
@@ -2311,6 +2457,80 @@ class TestModule < Test::Unit::TestCase
         require 'etc'
       }
     end;
+  end
+
+  def test_private_extended_module
+    assert_separately [], %q{
+      class Object
+        def bar; "Object#bar"; end
+      end
+      module M1
+        def bar; super; end
+      end
+      module M2
+        include M1
+        private(:bar)
+        def foo; bar; end
+      end
+      extend M2
+      assert_equal 'Object#bar', foo
+    }
+  end
+
+  ConstLocation = [__FILE__, __LINE__]
+
+  def test_const_source_location
+    assert_equal(ConstLocation, self.class.const_source_location(:ConstLocation))
+    assert_equal(ConstLocation, self.class.const_source_location("ConstLocation"))
+    assert_equal(ConstLocation, Object.const_source_location("#{self.class.name}::ConstLocation"))
+    assert_raise(TypeError) {
+      self.class.const_source_location(nil)
+    }
+    assert_raise_with_message(NameError, /wrong constant name/) {
+      self.class.const_source_location("xxx")
+    }
+    assert_raise_with_message(TypeError, %r'does not refer to class/module') {
+      self.class.const_source_location("ConstLocation::FILE")
+    }
+  end
+
+  module CloneTestM_simple
+    C = 1
+    def self.m; C; end
+  end
+
+  module CloneTestM0
+    def foo; TEST; end
+  end
+
+  CloneTestM1 = CloneTestM0.clone
+  CloneTestM2 = CloneTestM0.clone
+  module CloneTestM1
+    TEST = :M1
+  end
+  module CloneTestM2
+    TEST = :M2
+  end
+  class CloneTestC1
+    include CloneTestM1
+  end
+  class CloneTestC2
+    include CloneTestM2
+  end
+
+  def test_constant_access_from_method_in_cloned_module
+    m = CloneTestM_simple.dup
+    assert_equal 1, m::C, '[ruby-core:47834]'
+    assert_equal 1, m.m, '[ruby-core:47834]'
+
+    assert_equal :M1, CloneTestC1.new.foo, '[Bug #15877]'
+    assert_equal :M2, CloneTestC2.new.foo, '[Bug #15877]'
+  end
+
+  def test_clone_freeze
+    m = Module.new.freeze
+    assert_predicate m.clone, :frozen?
+    assert_not_predicate m.clone(freeze: false), :frozen?
   end
 
   private
@@ -2321,7 +2541,8 @@ class TestModule < Test::Unit::TestCase
       assert_include(methods, :#{method}, ":#{method} should be private")
 
       assert_raise_with_message(NoMethodError, "private method `#{method}' called for main:Object") {
-        self.#{method}
+        recv = self
+        recv.#{method}
       }
     }
   end

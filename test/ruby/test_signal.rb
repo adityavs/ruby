@@ -137,11 +137,6 @@ class TestSignal < Test::Unit::TestCase
 
       assert_raise(ArgumentError) { Signal.trap }
 
-      assert_raise(SecurityError) do
-        s = proc {}.taint
-        Signal.trap(:INT, s)
-      end
-
       # FIXME!
       Signal.trap(:INT, nil)
       Signal.trap(:INT, "")
@@ -332,7 +327,6 @@ class TestSignal < Test::Unit::TestCase
     old = trap(:CHLD, 'IGNORE')
     cmd = [ EnvUtil.rubybin, '--disable=gems', '-e' ]
     assert(system(*cmd, 'exit!(0)'), 'no ECHILD')
-    t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
     IO.pipe do |r, w|
       pid = spawn(*cmd, "STDIN.read", in: r)
       nb = Process.wait(pid, Process::WNOHANG)
@@ -341,6 +335,7 @@ class TestSignal < Test::Unit::TestCase
         w.close
       end
       assert_raise(Errno::ECHILD) { Process.wait(pid) }
+      th.join
       assert_nil nb
     end
 
@@ -369,4 +364,24 @@ class TestSignal < Test::Unit::TestCase
   ensure
     trap(:CHLD, old) if Signal.list['CHLD']
   end
+
+  def test_sigwait_fd_unused
+    t = EnvUtil.apply_timeout_scale(0.1)
+    assert_separately([], <<-End)
+      tgt = $$
+      trap(:TERM) { exit(0) }
+      e = "Process.daemon; sleep #{t * 2}; Process.kill(:TERM,\#{tgt})"
+      term = [ '#{EnvUtil.rubybin}', '--disable=gems', '-e', e ]
+      t2 = Thread.new { sleep } # grab sigwait_fd
+      Thread.pass until t2.stop?
+      Thread.new do
+        sleep #{t}
+        t2.kill
+        t2.join
+      end
+      Process.spawn(*term)
+      # last thread remaining, ensure it can react to SIGTERM
+      loop { sleep }
+    End
+  end if Process.respond_to?(:kill) && Process.respond_to?(:daemon)
 end

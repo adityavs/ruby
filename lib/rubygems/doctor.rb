@@ -26,7 +26,8 @@ class Gem::Doctor
     ['doc',            ''],
     ['extensions',     ''],
     ['gems',           ''],
-  ]
+    ['plugins',        ''],
+  ].freeze
 
   missing =
     Gem::REPOSITORY_SUBDIRECTORIES.sort -
@@ -41,7 +42,7 @@ class Gem::Doctor
   #
   # If +dry_run+ is true no files or directories will be removed.
 
-  def initialize gem_repository, dry_run = false
+  def initialize(gem_repository, dry_run = false)
     @gem_repository = gem_repository
     @dry_run        = dry_run
 
@@ -73,7 +74,7 @@ class Gem::Doctor
 
     Gem.use_paths @gem_repository.to_s
 
-    unless gem_repository? then
+    unless gem_repository?
       say 'This directory does not appear to be a RubyGems repository, ' +
           'skipping'
       say
@@ -99,7 +100,7 @@ class Gem::Doctor
   ##
   # Removes files in +sub_directory+ with +extension+
 
-  def doctor_child sub_directory, extension # :nodoc:
+  def doctor_child(sub_directory, extension) # :nodoc:
     directory = File.join(@gem_repository, sub_directory)
 
     Dir.entries(directory).sort.each do |ent|
@@ -112,10 +113,11 @@ class Gem::Doctor
       next if installed_specs.include? basename
       next if /^rubygems-\d/ =~ basename
       next if 'specifications' == sub_directory and 'default' == basename
+      next if 'plugins' == sub_directory and Gem.plugin_suffix_regexp =~ basename
 
       type = File.directory?(child) ? 'directory' : 'file'
 
-      action = if @dry_run then
+      action = if @dry_run
                  'Extra'
                else
                  FileUtils.rm_r(child)
@@ -129,4 +131,3 @@ class Gem::Doctor
   end
 
 end
-

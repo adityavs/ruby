@@ -3,7 +3,12 @@ require 'test/unit'
 
 class TestEncodingConverter < Test::Unit::TestCase
   def check_ec(edst, esrc, eres, dst, src, ec, off, len, opts=nil)
-    res = ec.primitive_convert(src, dst, off, len, opts)
+    case opts
+    when Hash
+      res = ec.primitive_convert(src, dst, off, len, **opts)
+    else
+      res = ec.primitive_convert(src, dst, off, len, opts)
+    end
     assert_equal([edst.b, esrc.b, eres],
                  [dst.b,  src.b,  res])
   end
@@ -680,7 +685,6 @@ class TestEncodingConverter < Test::Unit::TestCase
     ec = Encoding::Converter.new("utf-8", "euc-jp")
     assert_raise(Encoding::InvalidByteSequenceError) { ec.convert("a\x80") }
     assert_raise(Encoding::UndefinedConversionError) { ec.convert("\ufffd") }
-    assert_predicate(ec.convert("abc".taint), :tainted?)
     ret = ec.primitive_convert(nil, "", nil, nil)
     assert_equal(:finished, ret)
     assert_raise(ArgumentError) { ec.convert("a") }
@@ -908,6 +912,21 @@ class TestEncodingConverter < Test::Unit::TestCase
     assert_raise_with_message(ArgumentError, /\u{3042}/) {
       Encoding::Converter.new("", "", newline: "\u{3042}".to_sym)
     }
+    newlines = %i[universal_newline crlf_newline cr_newline]
+    (2..newlines.size).each do |i|
+      newlines.combination(i) do |opts|
+        assert_raise(Encoding::ConverterNotFoundError, "#{opts} are mutually exclusive") do
+          Encoding::Converter.new("", "", **opts.inject({}) {|o,nl|o[nl]=true;o})
+        end
+      end
+    end
+    newlines.each do |nl|
+      opts = {newline: :universal, nl => true}
+      ec2 = assert_warning(/:newline option preceds/, opts.inspect) do
+        Encoding::Converter.new("", "", **opts)
+      end
+      assert_equal(ec1, ec2)
+    end
   end
 
   def test_default_external

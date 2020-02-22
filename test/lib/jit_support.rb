@@ -1,31 +1,13 @@
+require 'rbconfig'
+
 module JITSupport
   JIT_TIMEOUT = 600 # 10min for each...
   JIT_SUCCESS_PREFIX = 'JIT success \(\d+\.\dms\)'
-  SUPPORTED_COMPILERS = [
-    'gcc',
-    'clang',
+  JIT_COMPACTION_PREFIX = 'JIT compaction \(\d+\.\dms\)'
+  UNSUPPORTED_COMPILERS = [
+    %r[\A/opt/intel/.*/bin/intel64/icc\b],
+    %r[\A/opt/developerstudio\d+\.\d+/bin/cc\z],
   ]
-
-  def self.check_support
-    # Experimental. If you want to ensure JIT is working with this test, please set this for now.
-    if ENV.key?('RUBY_FORCE_TEST_JIT')
-      return true
-    end
-
-    # Very pessimistic check. With this check, we can't ensure JIT is working.
-    begin
-      _, err = JITSupport.eval_with_jit_without_retry('proc {}.call', verbose: 1, min_calls: 1, timeout: 10)
-    rescue Timeout::Error
-      $stderr.puts "TestJIT: #jit_supported? check timed out"
-      false
-    else
-      err.match?(JIT_SUCCESS_PREFIX).tap do |success|
-        unless success
-          $stderr.puts "TestJIT.check_support stderr:\n```\n#{err}\n```\n"
-        end
-      end
-    end
-  end
 
   module_function
   # Run Ruby script with --jit-wait (Synchronous JIT compilation).
@@ -48,8 +30,13 @@ module JITSupport
     ]
     args << '--jit-wait' if wait
     args << '--jit-save-temps' if save_temps
+    args << '--jit-debug' if defined?(@jit_debug) && @jit_debug
     args << '-e' << script
     base_env = { 'MJIT_SEARCH_BUILD_DIR' => 'true' } # workaround to skip requiring `make install` for `make test-all`
+    if preloadenv = RbConfig::CONFIG['PRELOADENV'] and !preloadenv.empty?
+      so = "mjit_build_dir.#{RbConfig::CONFIG['SOEXT']}"
+      base_env[preloadenv] = File.realpath(so) rescue nil
+    end
     args.unshift(env ? base_env.merge!(env) : base_env)
     EnvUtil.invoke_ruby(args,
       '', true, true, timeout: timeout,
@@ -58,15 +45,13 @@ module JITSupport
 
   def supported?
     return @supported if defined?(@supported)
-    @supported = JITSupport.check_support.tap do |supported|
-      unless supported
-        warn "JIT tests are skipped since JIT seems not working. Set RUBY_FORCE_TEST_JIT=1 to let it fail.", uplevel: 1
-      end
-    end
+    @supported = UNSUPPORTED_COMPILERS.all? do |regexp|
+      !regexp.match?(RbConfig::CONFIG['MJIT_CC'])
+    end && RbConfig::CONFIG["MJIT_SUPPORT"] != 'no'
   end
 
   def remove_mjit_logs(stderr)
-    if RubyVM::MJIT.enabled?
+    if RubyVM::MJIT.enabled? # utility for -DFORCE_MJIT_ENABLE
       stderr.gsub(/^MJIT warning: Skipped to compile unsupported instruction: \w+\n/m, '')
     else
       stderr
@@ -74,7 +59,7 @@ module JITSupport
   end
 
   def code_block(code)
-    "```\n#{code}\n```\n\n"
+    %Q["""\n#{code}\n"""\n\n]
   end
 
   # We're retrying cc1 not found error on gcc, which should be solved in the future but ignored for now.

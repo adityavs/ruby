@@ -1,13 +1,15 @@
 # frozen_string_literal: true
 require 'rubygems/test_case'
-require 'rubygems/gem_runner'
 
 class TestGemGemRunner < Gem::TestCase
 
   def setup
     super
 
+    require 'rubygems/command'
     @orig_args = Gem::Command.build_args
+
+    require 'rubygems/gem_runner'
     @runner = Gem::GemRunner.new
   end
 
@@ -65,5 +67,44 @@ class TestGemGemRunner < Gem::TestCase
     assert_equal %w[--foo], args
   end
 
-end
+  def test_query_is_deprecated
+    args = %w[query]
 
+    use_ui @ui do
+      assert_nil @runner.run(args)
+    end
+
+    assert_equal "WARNING:  query command is deprecated. It will be removed on or after 2020-12-01.\n", @ui.error
+  end
+
+  def test_info_succeeds
+    args = %w[info]
+
+    use_ui @ui do
+      assert_nil @runner.run(args)
+    end
+
+    assert_empty @ui.error
+  end
+
+  def test_list_succeeds
+    args = %w[list]
+
+    use_ui @ui do
+      assert_nil @runner.run(args)
+    end
+
+    assert_empty @ui.error
+  end
+
+  def test_search_succeeds
+    args = %w[search]
+
+    use_ui @ui do
+      assert_nil @runner.run(args)
+    end
+
+    assert_empty @ui.error
+  end
+
+end

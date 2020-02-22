@@ -1,4 +1,4 @@
-# frozen_string_literal: false
+# frozen_string_literal: true
 module OpenSSL
   def self.deprecated_warning_flag
     unless flag = (@deprecated_warning_flag ||= nil)
@@ -10,6 +10,10 @@ module OpenSSL
       @deprecated_warning_flag = flag
     end
     flag
+  end
+
+  def self.restore_warning_flag
+    $warnflags = @warnflags
   end
 
   def self.check_func(func, header)

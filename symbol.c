@@ -9,15 +9,27 @@
 
 **********************************************************************/
 
+#include "gc.h"
+#include "internal.h"
+#include "internal/error.h"
+#include "internal/gc.h"
+#include "internal/hash.h"
+#include "internal/object.h"
+#include "internal/symbol.h"
+#include "internal/vm.h"
+#include "probes.h"
 #include "ruby/encoding.h"
 #include "ruby/st.h"
-#include "internal.h"
 #include "symbol.h"
-#include "gc.h"
-#include "probes.h"
 
+#ifndef USE_SYMBOL_GC
+# define USE_SYMBOL_GC 1
+#endif
 #ifndef SYMBOL_DEBUG
 # define SYMBOL_DEBUG 0
+#endif
+#ifndef CHECK_ID_SERIAL
+# define CHECK_ID_SERIAL SYMBOL_DEBUG
 #endif
 
 #define SYMBOL_PINNED_P(sym) (RSYMBOL(sym)->id&~ID_SCOPE_MASK)
@@ -60,12 +72,8 @@ enum id_entry_type {
     ID_ENTRY_SIZE
 };
 
-static struct symbols {
-    rb_id_serial_t last_id;
-    st_table *str_sym;
-    VALUE ids;
-    VALUE dsymbol_fstr_hash;
-} global_symbols = {tNEXT_ID-1};
+rb_symbols_t ruby_global_symbols = {tNEXT_ID-1};
+#define global_symbols ruby_global_symbols
 
 static const struct st_hash_type symhash = {
     rb_str_hash_cmp,
@@ -93,8 +101,6 @@ WARN_UNUSED_RESULT(static VALUE dsymbol_check(const VALUE sym));
 WARN_UNUSED_RESULT(static ID lookup_str_id(VALUE str));
 WARN_UNUSED_RESULT(static VALUE lookup_str_sym(const VALUE str));
 WARN_UNUSED_RESULT(static VALUE lookup_id_str(ID id));
-WARN_UNUSED_RESULT(static ID attrsetname_to_attr(VALUE name));
-WARN_UNUSED_RESULT(static ID attrsetname_to_attr_id(VALUE name));
 WARN_UNUSED_RESULT(static ID intern_str(VALUE str, int mutable));
 
 ID
@@ -153,12 +159,6 @@ rb_id_attrset(ID id)
     sym = lookup_str_sym(str);
     id = sym ? rb_sym2id(sym) : intern_str(str, 1);
     return id;
-}
-
-ID
-rb_id_attrget(ID id)
-{
-    return attrsetname_to_attr(rb_id2str(id));
 }
 
 static int
@@ -238,7 +238,7 @@ rb_sym_constant_char_p(const char *name, long nlen, rb_encoding *enc)
 #define IDSET_ATTRSET_FOR_SYNTAX ((1U<<ID_LOCAL)|(1U<<ID_CONST))
 #define IDSET_ATTRSET_FOR_INTERN (~(~0U<<(1<<ID_SCOPE_SHIFT)) & ~(1U<<ID_ATTRSET))
 
-static int
+int
 rb_enc_symname_type(const char *name, long len, rb_encoding *enc, unsigned int allowed_attrset)
 {
     const char *m = name;
@@ -375,18 +375,39 @@ set_id_entry(rb_id_serial_t num, VALUE str, VALUE sym)
 }
 
 static VALUE
-get_id_entry(rb_id_serial_t num, const enum id_entry_type t)
+get_id_serial_entry(rb_id_serial_t num, ID id, const enum id_entry_type t)
 {
     if (num && num <= global_symbols.last_id) {
 	size_t idx = num / ID_ENTRY_UNIT;
 	VALUE ids = global_symbols.ids;
 	VALUE ary;
 	if (idx < (size_t)RARRAY_LEN(ids) && !NIL_P(ary = rb_ary_entry(ids, (long)idx))) {
-	    VALUE result = rb_ary_entry(ary, (long)(num % ID_ENTRY_UNIT) * ID_ENTRY_SIZE + t);
-	    if (!NIL_P(result)) return result;
+            long pos = (long)(num % ID_ENTRY_UNIT) * ID_ENTRY_SIZE;
+            VALUE result = rb_ary_entry(ary, pos + t);
+            if (NIL_P(result)) return 0;
+#if CHECK_ID_SERIAL
+            if (id) {
+                VALUE sym = result;
+                if (t != ID_ENTRY_SYM)
+                    sym = rb_ary_entry(ary, pos + ID_ENTRY_SYM);
+                if (STATIC_SYM_P(sym)) {
+                    if (STATIC_SYM2ID(sym) != id) return 0;
+                }
+                else {
+                    if (RSYMBOL(sym)->id != id) return 0;
+                }
+            }
+#endif
+            return result;
 	}
     }
     return 0;
+}
+
+static VALUE
+get_id_entry(ID id, const enum id_entry_type t)
+{
+    return get_id_serial_entry(rb_id_to_serial(id), id, t);
 }
 
 static inline ID
@@ -396,7 +417,7 @@ __attribute__((unused))
 rb_id_serial_to_id(rb_id_serial_t num)
 {
     if (is_notop_id((ID)num)) {
-	VALUE sym = get_id_entry(num, ID_ENTRY_SYM);
+        VALUE sym = get_id_serial_entry(num, 0, ID_ENTRY_SYM);
 	return SYM2ID(sym);
     }
     else {
@@ -584,7 +605,7 @@ lookup_str_sym(const VALUE str)
 static VALUE
 lookup_id_str(ID id)
 {
-    return get_id_entry(rb_id_to_serial(id), ID_ENTRY_STR);
+    return get_id_entry(id, ID_ENTRY_STR);
 }
 
 ID
@@ -679,8 +700,8 @@ rb_gc_free_dsymbol(VALUE sym)
  *     str.intern   -> symbol
  *     str.to_sym   -> symbol
  *
- *  Returns the <code>Symbol</code> corresponding to <i>str</i>, creating the
- *  symbol if it did not previously exist. See <code>Symbol#id2name</code>.
+ *  Returns the Symbol corresponding to <i>str</i>, creating the
+ *  symbol if it did not previously exist. See Symbol#id2name.
  *
  *     "Koala".intern         #=> :Koala
  *     s = 'cat'.to_sym       #=> :cat
@@ -719,7 +740,8 @@ rb_str_intern(VALUE str)
 	enc = ascii;
     }
     else {
-	str = rb_str_new_frozen(str);
+        str = rb_str_dup(str);
+        OBJ_FREEZE(str);
     }
     str = rb_fstring(str);
     type = rb_str_symname_type(str, IDSET_ATTRSET_FOR_INTERN);
@@ -763,7 +785,7 @@ VALUE
 rb_id2sym(ID x)
 {
     if (!DYNAMIC_ID_P(x)) return STATIC_ID2SYM(x);
-    return get_id_entry(rb_id_to_serial(x), ID_ENTRY_SYM);
+    return get_id_entry(x, ID_ENTRY_SYM);
 }
 
 
@@ -822,22 +844,6 @@ symbols_i(st_data_t key, st_data_t value, st_data_t arg)
     }
 
 }
-
-/*
- *  call-seq:
- *     Symbol.all_symbols    => array
- *
- *  Returns an array of all the symbols currently in Ruby's symbol
- *  table.
- *
- *     Symbol.all_symbols.size    #=> 903
- *     Symbol.all_symbols[1,20]   #=> [:floor, :ARGV, :Binding, :symlink,
- *                                     :chown, :EOFError, :$;, :String,
- *                                     :LOCK_SH, :"setuid?", :$<,
- *                                     :default_proc, :compact, :extend,
- *                                     :Tms, :getwd, :$=, :ThreadGroup,
- *                                     :wait2, :$>]
- */
 
 VALUE
 rb_sym_all_symbols(void)
@@ -902,39 +908,9 @@ rb_is_const_sym(VALUE sym)
 }
 
 int
-rb_is_class_sym(VALUE sym)
-{
-    return is_class_sym(sym);
-}
-
-int
-rb_is_global_sym(VALUE sym)
-{
-    return is_global_sym(sym);
-}
-
-int
-rb_is_instance_sym(VALUE sym)
-{
-    return is_instance_sym(sym);
-}
-
-int
 rb_is_attrset_sym(VALUE sym)
 {
     return is_attrset_sym(sym);
-}
-
-int
-rb_is_local_sym(VALUE sym)
-{
-    return is_local_sym(sym);
-}
-
-int
-rb_is_junk_sym(VALUE sym)
-{
-    return is_junk_sym(sym);
 }
 
 /**
@@ -1044,13 +1020,11 @@ rb_check_symbol_cstr(const char *ptr, long len, rb_encoding *enc)
     return Qnil;
 }
 
-#undef rb_sym_intern_cstr
 #undef rb_sym_intern_ascii_cstr
 #ifdef __clang__
 NOINLINE(VALUE rb_sym_intern(const char *ptr, long len, rb_encoding *enc));
 #else
 FUNC_MINIMIZED(VALUE rb_sym_intern(const char *ptr, long len, rb_encoding *enc));
-FUNC_MINIMIZED(VALUE rb_sym_intern_cstr(const char *ptr, rb_encoding *enc));
 FUNC_MINIMIZED(VALUE rb_sym_intern_ascii(const char *ptr, long len));
 FUNC_MINIMIZED(VALUE rb_sym_intern_ascii_cstr(const char *ptr));
 #endif
@@ -1061,12 +1035,6 @@ rb_sym_intern(const char *ptr, long len, rb_encoding *enc)
     struct RString fake_str;
     const VALUE name = rb_setup_fake_str(&fake_str, ptr, len, enc);
     return rb_str_intern(name);
-}
-
-VALUE
-rb_sym_intern_cstr(const char *ptr, rb_encoding *enc)
-{
-    return rb_sym_intern(ptr, strlen(ptr), enc);
 }
 
 VALUE
@@ -1087,34 +1055,6 @@ rb_to_symbol_type(VALUE obj)
     return rb_convert_type_with_id(obj, T_SYMBOL, "Symbol", idTo_sym);
 }
 
-static ID
-attrsetname_to_attr_id(VALUE name)
-{
-    ID id;
-    struct RString fake_str;
-    /* make local name by chopping '=' */
-    const VALUE localname = rb_setup_fake_str(&fake_str,
-					      RSTRING_PTR(name), RSTRING_LEN(name) - 1,
-					      rb_enc_get(name));
-    OBJ_FREEZE(localname);
-
-    if ((id = lookup_str_id(localname)) != 0) {
-	return id;
-    }
-    RB_GC_GUARD(name);
-    return (ID)0;
-}
-
-static ID
-attrsetname_to_attr(VALUE name)
-{
-    if (rb_is_attrset_name(name)) {
-	return attrsetname_to_attr_id(name);
-    }
-
-    return (ID)0;
-}
-
 int
 rb_is_const_name(VALUE name)
 {
@@ -1128,43 +1068,15 @@ rb_is_class_name(VALUE name)
 }
 
 int
-rb_is_global_name(VALUE name)
-{
-    return rb_str_symname_type(name, 0) == ID_GLOBAL;
-}
-
-int
 rb_is_instance_name(VALUE name)
 {
     return rb_str_symname_type(name, 0) == ID_INSTANCE;
 }
 
 int
-rb_is_attrset_name(VALUE name)
-{
-    return rb_str_symname_type(name, IDSET_ATTRSET_FOR_INTERN) == ID_ATTRSET;
-}
-
-int
 rb_is_local_name(VALUE name)
 {
     return rb_str_symname_type(name, 0) == ID_LOCAL;
-}
-
-int
-rb_is_method_name(VALUE name)
-{
-    switch (rb_str_symname_type(name, 0)) {
-      case ID_LOCAL: case ID_ATTRSET: case ID_JUNK:
-	return TRUE;
-    }
-    return FALSE;
-}
-
-int
-rb_is_junk_name(VALUE name)
-{
-    return rb_str_symname_type(name, IDSET_ATTRSET_FOR_SYNTAX) == -1;
 }
 
 #include "id_table.c"

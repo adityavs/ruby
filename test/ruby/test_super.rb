@@ -307,6 +307,29 @@ class TestSuper < Test::Unit::TestCase
     end
   end
 
+  def test_super_in_instance_eval_in_module
+    super_class = EnvUtil.labeled_class("Super\u{30af 30e9 30b9}") {
+      def foo
+        return [:super, self]
+      end
+    }
+    mod = EnvUtil.labeled_module("Mod\u{30af 30e9 30b9}") {
+      def foo
+        x = Object.new
+        x.instance_eval do
+          super()
+        end
+      end
+    }
+    sub_class = EnvUtil.labeled_class("Sub\u{30af 30e9 30b9}", super_class) {
+      include mod
+    }
+    obj = sub_class.new
+    assert_raise_with_message(TypeError, /Sub\u{30af 30e9 30b9}/) do
+      obj.foo
+    end
+  end
+
   def test_super_in_orphan_block
     super_class = EnvUtil.labeled_class("Super\u{30af 30e9 30b9}") {
       def foo
@@ -559,5 +582,25 @@ class TestSuper < Test::Unit::TestCase
   end
   def test_super_with_modified_rest_parameter
     assert_equal [13], TestFor_super_with_modified_rest_parameter.new.foo
+  end
+
+  def test_super_with_define_method
+    superklass1 = Class.new do
+      def foo; :foo; end
+      def bar; :bar; end
+      def boo; :boo; end
+    end
+    superklass2 = Class.new(superklass1) do
+      alias baz boo
+      def boo; :boo2; end
+    end
+    subklass = Class.new(superklass2)
+    [:foo, :bar, :baz, :boo].each do |sym|
+      subklass.define_method(sym){ super() }
+    end
+    assert_equal :foo, subklass.new.foo
+    assert_equal :bar, subklass.new.bar
+    assert_equal :boo, subklass.new.baz
+    assert_equal :boo2, subklass.new.boo
   end
 end

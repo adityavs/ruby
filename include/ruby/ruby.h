@@ -27,6 +27,14 @@ extern "C" {
 #endif
 
 #include "defines.h"
+#include "ruby/assert.h"
+
+/* For MinGW, we need __declspec(dllimport) for RUBY_EXTERN on MJIT.
+   mswin's RUBY_EXTERN already has that. See also: win32/Makefile.sub */
+#if defined(MJIT_HEADER) && defined(_WIN32) && defined(__GNUC__)
+# undef RUBY_EXTERN
+# define RUBY_EXTERN extern __declspec(dllimport)
+#endif
 
 #if defined(__cplusplus)
 /* __builtin_choose_expr and __builtin_types_compatible aren't available
@@ -124,10 +132,21 @@ typedef char ruby_check_sizeof_voidp[SIZEOF_VOIDP == sizeof(void*) ? 1 : -1];
 #define PRI_SHORT_PREFIX "h"
 #endif
 
+#ifndef PRI_64_PREFIX
 #if SIZEOF_LONG == 8
 #define PRI_64_PREFIX PRI_LONG_PREFIX
 #elif SIZEOF_LONG_LONG == 8
 #define PRI_64_PREFIX PRI_LL_PREFIX
+#endif
+#endif
+
+#ifndef PRIdPTR
+#define PRIdPTR PRI_PTR_PREFIX"d"
+#define PRIiPTR PRI_PTR_PREFIX"i"
+#define PRIoPTR PRI_PTR_PREFIX"o"
+#define PRIuPTR PRI_PTR_PREFIX"u"
+#define PRIxPTR PRI_PTR_PREFIX"x"
+#define PRIXPTR PRI_PTR_PREFIX"X"
 #endif
 
 #define RUBY_PRI_VALUE_MARK "\v"
@@ -494,6 +513,7 @@ enum ruby_value_type {
     RUBY_T_NODE   = 0x1b,
     RUBY_T_ICLASS = 0x1c,
     RUBY_T_ZOMBIE = 0x1d,
+    RUBY_T_MOVED  = 0x1e,
 
     RUBY_T_MASK   = 0x1f
 };
@@ -524,6 +544,7 @@ enum ruby_value_type {
 #define T_UNDEF  RUBY_T_UNDEF
 #define T_NODE   RUBY_T_NODE
 #define T_ZOMBIE RUBY_T_ZOMBIE
+#define T_MOVED RUBY_T_MOVED
 #define T_MASK   RUBY_T_MASK
 
 #define RB_BUILTIN_TYPE(x) (int)(((struct RBasic*)(x))->flags & RUBY_T_MASK)
@@ -583,21 +604,18 @@ char *rb_string_value_cstr(volatile VALUE*);
 #define StringValueCStr(v) rb_string_value_cstr(&(v))
 
 void rb_check_safe_obj(VALUE);
-#define SafeStringValue(v) do {\
-    StringValue(v);\
-    rb_check_safe_obj(v);\
-} while (0)
+#define SafeStringValue(v) StringValue(v)
 #if GCC_VERSION_SINCE(4,4,0)
-void rb_check_safe_str(VALUE) __attribute__((error("rb_check_safe_str() and Check_SafeStr() are obsolete; use SafeStringValue() instead")));
+void rb_check_safe_str(VALUE) __attribute__((error("rb_check_safe_str() and Check_SafeStr() are obsolete; use StringValue() instead")));
 # define Check_SafeStr(v) rb_check_safe_str((VALUE)(v))
 #else
-# define rb_check_safe_str(x) [<"rb_check_safe_str() is obsolete; use SafeStringValue() instead">]
-# define Check_SafeStr(v) [<"Check_SafeStr() is obsolete; use SafeStringValue() instead">]
+# define rb_check_safe_str(x) [<"rb_check_safe_str() is obsolete; use StringValue() instead">]
+# define Check_SafeStr(v) [<"Check_SafeStr() is obsolete; use StringValue() instead">]
 #endif
 
 VALUE rb_str_export(VALUE);
 #define ExportStringValue(v) do {\
-    SafeStringValue(v);\
+    StringValue(v);\
    (v) = rb_str_export(v);\
 } while (0)
 VALUE rb_str_export_locale(VALUE);
@@ -606,42 +624,7 @@ VALUE rb_get_path(VALUE);
 #define FilePathValue(v) (RB_GC_GUARD(v) = rb_get_path(v))
 
 VALUE rb_get_path_no_checksafe(VALUE);
-#define FilePathStringValue(v) ((v) = rb_get_path_no_checksafe(v))
-
-#define RUBY_SAFE_LEVEL_MAX 1
-void rb_secure(int);
-int rb_safe_level(void);
-void rb_set_safe_level(int);
-#if GCC_VERSION_SINCE(4,4,0)
-int ruby_safe_level_2_error(void) __attribute__((error("$SAFE=2 to 4 are obsolete")));
-int ruby_safe_level_2_warning(void) __attribute__((const,warning("$SAFE=2 to 4 are obsolete")));
-# ifdef RUBY_EXPORT
-#   define ruby_safe_level_2_warning() ruby_safe_level_2_error()
-# endif
-# if defined(HAVE_BUILTIN___BUILTIN_CHOOSE_EXPR_CONSTANT_P)
-#  define RUBY_SAFE_LEVEL_INVALID_P(level) \
-    __extension__(\
-	__builtin_choose_expr(\
-	    __builtin_constant_p(level), \
-	    ((level) < 0 || RUBY_SAFE_LEVEL_MAX < (level)), 0))
-#  define RUBY_SAFE_LEVEL_CHECK(level, type) \
-    __extension__(__builtin_choose_expr(RUBY_SAFE_LEVEL_INVALID_P(level), ruby_safe_level_2_##type(), (level)))
-# else
-/* in gcc 4.8 or earlier, __builtin_choose_expr() does not consider
- * __builtin_constant_p(variable) a constant expression.
- */
-#  define RUBY_SAFE_LEVEL_INVALID_P(level) \
-    __extension__(__builtin_constant_p(level) && \
-		  ((level) < 0 || RUBY_SAFE_LEVEL_MAX < (level)))
-#  define RUBY_SAFE_LEVEL_CHECK(level, type) \
-    (RUBY_SAFE_LEVEL_INVALID_P(level) ? ruby_safe_level_2_##type() : (level))
-# endif
-# define rb_secure(level) rb_secure(RUBY_SAFE_LEVEL_CHECK(level, warning))
-# define rb_set_safe_level(level) rb_set_safe_level(RUBY_SAFE_LEVEL_CHECK(level, error))
-#endif
-void rb_set_safe_level_force(int);
-void rb_secure_update(VALUE);
-NORETURN(void rb_insecure_operation(void));
+#define FilePathStringValue(v) ((v) = rb_get_path(v))
 
 VALUE rb_errinfo(void);
 void rb_set_errinfo(VALUE);
@@ -827,6 +810,7 @@ enum ruby_fl_type {
     RUBY_FL_FINALIZE  = (1<<7),
     RUBY_FL_TAINT     = (1<<8),
     RUBY_FL_UNTRUSTED = RUBY_FL_TAINT,
+    RUBY_FL_SEEN_OBJ_ID = (1<<9),
     RUBY_FL_EXIVAR    = (1<<10),
     RUBY_FL_FREEZE    = (1<<11),
 
@@ -885,10 +869,15 @@ VALUE rb_obj_reveal(VALUE obj, VALUE klass); /* do not use this API to change kl
 
 #define RBASIC_CLASS(obj) (RBASIC(obj)->klass)
 
+#define RVALUE_EMBED_LEN_MAX RVALUE_EMBED_LEN_MAX
+enum ruby_rvalue_flags {
+    RVALUE_EMBED_LEN_MAX = 3
+};
+
 #define ROBJECT_EMBED_LEN_MAX ROBJECT_EMBED_LEN_MAX
 #define ROBJECT_EMBED ROBJECT_EMBED
 enum ruby_robject_flags {
-    ROBJECT_EMBED_LEN_MAX = 3,
+    ROBJECT_EMBED_LEN_MAX = RVALUE_EMBED_LEN_MAX,
     ROBJECT_EMBED = RUBY_FL_USER1,
 
     ROBJECT_ENUM_END
@@ -954,7 +943,7 @@ enum ruby_rstring_flags {
     RSTRING_EMBED_LEN_MASK = (RUBY_FL_USER2|RUBY_FL_USER3|RUBY_FL_USER4|
 			      RUBY_FL_USER5|RUBY_FL_USER6),
     RSTRING_EMBED_LEN_SHIFT = (RUBY_FL_USHIFT+2),
-    RSTRING_EMBED_LEN_MAX = (int)((sizeof(VALUE)*3)/sizeof(char)-1),
+    RSTRING_EMBED_LEN_MAX = (int)((sizeof(VALUE)*RVALUE_EMBED_LEN_MAX)/sizeof(char)-1),
     RSTRING_FSTR = RUBY_FL_USER17,
 
     RSTRING_ENUM_END
@@ -995,12 +984,23 @@ struct RString {
      ((ptrvar) = RSTRING(str)->as.ary, (lenvar) = RSTRING_EMBED_LEN(str)) : \
      ((ptrvar) = RSTRING(str)->as.heap.ptr, (lenvar) = RSTRING(str)->as.heap.len))
 
+#ifndef USE_TRANSIENT_HEAP
+#define USE_TRANSIENT_HEAP 1
+#endif
+
 enum ruby_rarray_flags {
-    RARRAY_EMBED_LEN_MAX = 3,
+    RARRAY_EMBED_LEN_MAX = RVALUE_EMBED_LEN_MAX,
     RARRAY_EMBED_FLAG = RUBY_FL_USER1,
     /* RUBY_FL_USER2 is for ELTS_SHARED */
     RARRAY_EMBED_LEN_MASK = (RUBY_FL_USER4|RUBY_FL_USER3),
     RARRAY_EMBED_LEN_SHIFT = (RUBY_FL_USHIFT+3),
+
+#if USE_TRANSIENT_HEAP
+    RARRAY_TRANSIENT_FLAG = RUBY_FL_USER13,
+#define RARRAY_TRANSIENT_FLAG RARRAY_TRANSIENT_FLAG
+#else
+#define RARRAY_TRANSIENT_FLAG 0
+#endif
 
     RARRAY_ENUM_END
 };
@@ -1008,6 +1008,7 @@ enum ruby_rarray_flags {
 #define RARRAY_EMBED_LEN_MASK (VALUE)RARRAY_EMBED_LEN_MASK
 #define RARRAY_EMBED_LEN_MAX RARRAY_EMBED_LEN_MAX
 #define RARRAY_EMBED_LEN_SHIFT RARRAY_EMBED_LEN_SHIFT
+
 struct RArray {
     struct RBasic basic;
     union {
@@ -1015,7 +1016,12 @@ struct RArray {
 	    long len;
 	    union {
 		long capa;
-		VALUE shared;
+#if defined(__clang__)      /* <- clang++ is sane */ || \
+    !defined(__cplusplus)   /* <- C99 is sane */     || \
+    (__cplusplus > 199711L) /* <- C++11 is sane */
+                const
+#endif
+                VALUE shared_root;
 	    } aux;
 	    const VALUE *ptr;
 	} heap;
@@ -1028,9 +1034,26 @@ struct RArray {
 #define RARRAY_LEN(a) rb_array_len(a)
 #define RARRAY_LENINT(ary) rb_long2int(RARRAY_LEN(ary))
 #define RARRAY_CONST_PTR(a) rb_array_const_ptr(a)
+#define RARRAY_CONST_PTR_TRANSIENT(a) rb_array_const_ptr_transient(a)
 
-#define RARRAY_PTR_USE_START(a) ((VALUE *)RARRAY_CONST_PTR(a))
-#define RARRAY_PTR_USE_END(a) /* */
+#if USE_TRANSIENT_HEAP
+#define RARRAY_TRANSIENT_P(ary) FL_TEST_RAW((ary), RARRAY_TRANSIENT_FLAG)
+#else
+#define RARRAY_TRANSIENT_P(ary) 0
+#endif
+
+#define RARRAY_PTR_USE_START_TRANSIENT(a) rb_array_ptr_use_start(a, 1)
+#define RARRAY_PTR_USE_END_TRANSIENT(a) rb_array_ptr_use_end(a, 1)
+
+#define RARRAY_PTR_USE_TRANSIENT(ary, ptr_name, expr) do { \
+    const VALUE _ary = (ary); \
+    VALUE *ptr_name = (VALUE *)RARRAY_PTR_USE_START_TRANSIENT(_ary); \
+    expr; \
+    RARRAY_PTR_USE_END_TRANSIENT(_ary); \
+} while (0)
+
+#define RARRAY_PTR_USE_START(a) rb_array_ptr_use_start(a, 0)
+#define RARRAY_PTR_USE_END(a) rb_array_ptr_use_end(a, 0)
 
 #define RARRAY_PTR_USE(ary, ptr_name, expr) do { \
     const VALUE _ary = (ary); \
@@ -1039,12 +1062,13 @@ struct RArray {
     RARRAY_PTR_USE_END(_ary); \
 } while (0)
 
-#define RARRAY_AREF(a, i)    (RARRAY_CONST_PTR(a)[i])
+#define RARRAY_AREF(a, i) (RARRAY_CONST_PTR_TRANSIENT(a)[i])
 #define RARRAY_ASET(a, i, v) do { \
     const VALUE _ary = (a); \
-    VALUE *ptr = (VALUE *)RARRAY_PTR_USE_START(_ary); \
-    RB_OBJ_WRITE(_ary, &ptr[i], (v)); \
-    RARRAY_PTR_USE_END(_ary); \
+    const VALUE _v = (v); \
+    VALUE *ptr = (VALUE *)RARRAY_PTR_USE_START_TRANSIENT(_ary); \
+    RB_OBJ_WRITE(_ary, &ptr[i], _v); \
+    RARRAY_PTR_USE_END_TRANSIENT(_ary); \
 } while (0)
 
 #define RARRAY_PTR(a) ((VALUE *)RARRAY_CONST_PTR(RB_OBJ_WB_UNPROTECT_FOR(ARRAY, a)))
@@ -1061,11 +1085,13 @@ struct RRegexp {
 #define RREGEXP_SRC_LEN(r) RSTRING_LEN(RREGEXP(r)->src)
 #define RREGEXP_SRC_END(r) RSTRING_END(RREGEXP(r)->src)
 
-/* RHASH_TBL allocates st_table if not available. */
-#define RHASH_TBL(h) rb_hash_tbl(h)
+/* RHash is defined at internal.h */
+size_t rb_hash_size_num(VALUE hash);
+
+#define RHASH_TBL(h) rb_hash_tbl(h, __FILE__, __LINE__)
 #define RHASH_ITER_LEV(h) rb_hash_iter_lev(h)
 #define RHASH_IFNONE(h) rb_hash_ifnone(h)
-#define RHASH_SIZE(h) NUM2SIZET(rb_hash_size(h))
+#define RHASH_SIZE(h) rb_hash_size_num(h)
 #define RHASH_EMPTY_P(h) (RHASH_SIZE(h) == 0)
 #define RHASH_SET_IFNONE(h, ifnone) rb_hash_set_ifnone((VALUE)h, ifnone)
 
@@ -1073,9 +1099,6 @@ struct RFile {
     struct RBasic basic;
     struct rb_io_t *fptr;
 };
-
-#define RCOMPLEX_SET_REAL(cmp, r) RB_OBJ_WRITE((cmp), &((struct RComplex *)(cmp))->real,(r))
-#define RCOMPLEX_SET_IMAG(cmp, i) RB_OBJ_WRITE((cmp), &((struct RComplex *)(cmp))->imag,(i))
 
 struct RData {
     struct RBasic basic;
@@ -1092,7 +1115,8 @@ struct rb_data_type_struct {
 	void (*dmark)(void*);
 	void (*dfree)(void*);
 	size_t (*dsize)(const void *);
-	void *reserved[2]; /* For future extension.
+        void (*dcompact)(void*);
+        void *reserved[1]; /* For future extension.
 			      This array *must* be filled with ZERO. */
     } function;
     const rb_data_type_t *parent;
@@ -1203,6 +1227,7 @@ int rb_big_sign(VALUE);
 #define RBIGNUM_NEGATIVE_P(b) (RBIGNUM_SIGN(b)==0)
 
 #define R_CAST(st)   (struct st*)
+#define RMOVED(obj)  (R_CAST(RMoved)(obj))
 #define RBASIC(obj)  (R_CAST(RBasic)(obj))
 #define ROBJECT(obj) (R_CAST(RObject)(obj))
 #define RCLASS(obj)  (R_CAST(RClass)(obj))
@@ -1221,6 +1246,7 @@ int rb_big_sign(VALUE);
 #define FL_FINALIZE     ((VALUE)RUBY_FL_FINALIZE)
 #define FL_TAINT        ((VALUE)RUBY_FL_TAINT)
 #define FL_UNTRUSTED    ((VALUE)RUBY_FL_UNTRUSTED)
+#define FL_SEEN_OBJ_ID  ((VALUE)RUBY_FL_SEEN_OBJ_ID)
 #define FL_EXIVAR       ((VALUE)RUBY_FL_EXIVAR)
 #define FL_FREEZE       ((VALUE)RUBY_FL_FREEZE)
 
@@ -1245,7 +1271,7 @@ int rb_big_sign(VALUE);
 #define FL_USER16 	((VALUE)RUBY_FL_USER16)
 #define FL_USER17 	((VALUE)RUBY_FL_USER17)
 #define FL_USER18 	((VALUE)RUBY_FL_USER18)
-#define FL_USER19 	((VALUE)RUBY_FL_USER19)
+#define FL_USER19 	((VALUE)(unsigned int)RUBY_FL_USER19)
 
 #define RB_SPECIAL_CONST_P(x) (RB_IMMEDIATE_P(x) || !RB_TEST(x))
 #define SPECIAL_CONST_P(x) RB_SPECIAL_CONST_P(x)
@@ -1674,11 +1700,11 @@ rb_alloc_tmp_buffer2(volatile VALUE *store, long count, size_t elsize)
 #else
 # define RUBY_ALLOCV_LIMIT 1024
 # define RB_ALLOCV(v, n) ((n) < RUBY_ALLOCV_LIMIT ? \
-		       (RB_GC_GUARD(v) = 0, alloca(n)) : \
+                       ((v) = 0, alloca(n)) : \
 		       rb_alloc_tmp_buffer(&(v), (n)))
 # define RB_ALLOCV_N(type, v, n) \
     ((type*)(((size_t)(n) < RUBY_ALLOCV_LIMIT / sizeof(type)) ? \
-	     (RB_GC_GUARD(v) = 0, alloca((size_t)(n) * sizeof(type))) : \
+             ((v) = 0, alloca((size_t)(n) * sizeof(type))) : \
 	     rb_alloc_tmp_buffer2(&(v), (long)(n), sizeof(type))))
 #endif
 #define RB_ALLOCV_END(v) rb_free_tmp_buffer(&(v))
@@ -1691,6 +1717,15 @@ rb_alloc_tmp_buffer2(volatile VALUE *store, long count, size_t elsize)
 #define MEMCPY(p1,p2,type,n) memcpy((p1), (p2), sizeof(type)*(size_t)(n))
 #define MEMMOVE(p1,p2,type,n) memmove((p1), (p2), sizeof(type)*(size_t)(n))
 #define MEMCMP(p1,p2,type,n) memcmp((p1), (p2), sizeof(type)*(size_t)(n))
+#ifdef __GLIBC__
+static inline void *
+ruby_nonempty_memcpy(void *dest, const void *src, size_t n)
+{
+    /* if nothing to be copied, src may be NULL */
+    return (n ? memcpy(dest, src, n) : dest);
+}
+#define memcpy(p1,p2,n) ruby_nonempty_memcpy(p1, p2, n)
+#endif
 
 void rb_obj_infect(VALUE victim, VALUE carrier);
 
@@ -1708,34 +1743,31 @@ void rb_include_module(VALUE,VALUE);
 void rb_extend_object(VALUE,VALUE);
 void rb_prepend_module(VALUE,VALUE);
 
-struct rb_global_variable;
-
-typedef VALUE rb_gvar_getter_t(ID id, void *data, struct rb_global_variable *gvar);
-typedef void  rb_gvar_setter_t(VALUE val, ID id, void *data, struct rb_global_variable *gvar);
+typedef VALUE rb_gvar_getter_t(ID id, VALUE *data);
+typedef void  rb_gvar_setter_t(VALUE val, ID id, VALUE *data);
 typedef void  rb_gvar_marker_t(VALUE *var);
 
-VALUE rb_gvar_undef_getter(ID id, void *data, struct rb_global_variable *gvar);
-void  rb_gvar_undef_setter(VALUE val, ID id, void *data, struct rb_global_variable *gvar);
-void  rb_gvar_undef_marker(VALUE *var);
+rb_gvar_getter_t rb_gvar_undef_getter;
+rb_gvar_setter_t rb_gvar_undef_setter;
+rb_gvar_marker_t rb_gvar_undef_marker;
 
-VALUE rb_gvar_val_getter(ID id, void *data, struct rb_global_variable *gvar);
-void  rb_gvar_val_setter(VALUE val, ID id, void *data, struct rb_global_variable *gvar);
-void  rb_gvar_val_marker(VALUE *var);
+rb_gvar_getter_t rb_gvar_val_getter;
+rb_gvar_setter_t rb_gvar_val_setter;
+rb_gvar_marker_t rb_gvar_val_marker;
 
-VALUE rb_gvar_var_getter(ID id, void *data, struct rb_global_variable *gvar);
-void  rb_gvar_var_setter(VALUE val, ID id, void *data, struct rb_global_variable *gvar);
-void  rb_gvar_var_marker(VALUE *var);
+rb_gvar_getter_t rb_gvar_var_getter;
+rb_gvar_setter_t rb_gvar_var_setter;
+rb_gvar_marker_t rb_gvar_var_marker;
 
-NORETURN(void  rb_gvar_readonly_setter(VALUE val, ID id, void *data, struct rb_global_variable *gvar));
+NORETURN(rb_gvar_setter_t rb_gvar_readonly_setter);
 
 void rb_define_variable(const char*,VALUE*);
-void rb_define_virtual_variable(const char*,VALUE(*)(ANYARGS),void(*)(ANYARGS));
-void rb_define_hooked_variable(const char*,VALUE*,VALUE(*)(ANYARGS),void(*)(ANYARGS));
+void rb_define_virtual_variable(const char*,rb_gvar_getter_t*,rb_gvar_setter_t*);
+void rb_define_hooked_variable(const char*,VALUE*,rb_gvar_getter_t*,rb_gvar_setter_t*);
 void rb_define_readonly_variable(const char*,const VALUE*);
 void rb_define_const(VALUE,const char*,VALUE);
 void rb_define_global_const(const char*,VALUE);
 
-#define RUBY_METHOD_FUNC(func) ((VALUE (*)(ANYARGS))(func))
 void rb_define_method(VALUE,const char*,VALUE(*)(ANYARGS),int);
 void rb_define_module_function(VALUE,const char*,VALUE(*)(ANYARGS),int);
 void rb_define_global_function(const char*,VALUE(*)(ANYARGS),int);
@@ -1771,7 +1803,7 @@ VALUE rb_check_symbol(volatile VALUE *namep);
     do RUBY_CONST_ID_CACHE((var) =, (str)) while (0)
 #define CONST_ID_CACHE(result, str) RUBY_CONST_ID_CACHE(result, str)
 #define CONST_ID(var, str) RUBY_CONST_ID(var, str)
-#ifdef __GNUC__
+#if defined(HAVE_BUILTIN___BUILTIN_CONSTANT_P) && defined(HAVE_STMT_AND_DECL_IN_EXPR)
 /* __builtin_constant_p and statement expression is available
  * since gcc-2.7.2.3 at least. */
 #define rb_intern(str) \
@@ -1821,13 +1853,22 @@ VALUE rb_eval_string_protect(const char*, int*);
 VALUE rb_eval_string_wrap(const char*, int*);
 VALUE rb_funcall(VALUE, ID, int, ...);
 VALUE rb_funcallv(VALUE, ID, int, const VALUE*);
+VALUE rb_funcallv_kw(VALUE, ID, int, const VALUE*, int);
 VALUE rb_funcallv_public(VALUE, ID, int, const VALUE*);
+VALUE rb_funcallv_public_kw(VALUE, ID, int, const VALUE*, int);
 #define rb_funcall2 rb_funcallv
 #define rb_funcall3 rb_funcallv_public
 VALUE rb_funcall_passing_block(VALUE, ID, int, const VALUE*);
+VALUE rb_funcall_passing_block_kw(VALUE, ID, int, const VALUE*, int);
 VALUE rb_funcall_with_block(VALUE, ID, int, const VALUE*, VALUE);
+VALUE rb_funcall_with_block_kw(VALUE, ID, int, const VALUE*, VALUE, int);
 int rb_scan_args(int, const VALUE*, const char*, ...);
+#define RB_SCAN_ARGS_PASS_CALLED_KEYWORDS 0
+#define RB_SCAN_ARGS_KEYWORDS 1
+#define RB_SCAN_ARGS_LAST_HASH_KEYWORDS 3
+int rb_scan_args_kw(int, int, const VALUE*, const char*, ...);
 VALUE rb_call_super(int, const VALUE*);
+VALUE rb_call_super_kw(int, const VALUE*, int);
 VALUE rb_current_receiver(void);
 int rb_get_kwargs(VALUE keyword_hash, const ID *table, int required, int optional, VALUE *);
 VALUE rb_extract_keywords(VALUE *orighash);
@@ -1854,7 +1895,7 @@ enum rb_io_wait_readwrite {RB_IO_WAIT_READABLE, RB_IO_WAIT_WRITABLE};
 
 PRINTF_ARGS(NORETURN(void rb_raise(VALUE, const char*, ...)), 2, 3);
 PRINTF_ARGS(NORETURN(void rb_fatal(const char*, ...)), 1, 2);
-PRINTF_ARGS(NORETURN(void rb_bug(const char*, ...)), 1, 2);
+COLDFUNC PRINTF_ARGS(NORETURN(void rb_bug(const char*, ...)), 1, 2);
 NORETURN(void rb_bug_errno(const char*, int));
 NORETURN(void rb_sys_fail(const char*));
 NORETURN(void rb_sys_fail_str(VALUE));
@@ -1878,35 +1919,39 @@ PRINTF_ARGS(void rb_warning(const char*, ...), 1, 2);
 PRINTF_ARGS(void rb_compile_warning(const char *, int, const char*, ...), 3, 4);
 PRINTF_ARGS(void rb_sys_warning(const char*, ...), 1, 2);
 /* reports always */
-PRINTF_ARGS(void rb_warn(const char*, ...), 1, 2);
+COLDFUNC PRINTF_ARGS(void rb_warn(const char*, ...), 1, 2);
 PRINTF_ARGS(void rb_compile_warn(const char *, int, const char*, ...), 3, 4);
 
+#define RB_BLOCK_CALL_FUNC_STRICT 1
 #define RUBY_BLOCK_CALL_FUNC_TAKES_BLOCKARG 1
 #define RB_BLOCK_CALL_FUNC_ARGLIST(yielded_arg, callback_arg) \
     VALUE yielded_arg, VALUE callback_arg, int argc, const VALUE *argv, VALUE blockarg
 typedef VALUE rb_block_call_func(RB_BLOCK_CALL_FUNC_ARGLIST(yielded_arg, callback_arg));
-
-#if defined RB_BLOCK_CALL_FUNC_STRICT && RB_BLOCK_CALL_FUNC_STRICT
 typedef rb_block_call_func *rb_block_call_func_t;
-#else
-typedef VALUE (*rb_block_call_func_t)(ANYARGS);
-#endif
 
 VALUE rb_each(VALUE);
 VALUE rb_yield(VALUE);
 VALUE rb_yield_values(int n, ...);
 VALUE rb_yield_values2(int n, const VALUE *argv);
+VALUE rb_yield_values_kw(int n, const VALUE *argv, int kw_splat);
 VALUE rb_yield_splat(VALUE);
-VALUE rb_yield_block(VALUE, VALUE, int, const VALUE *, VALUE); /* rb_block_call_func */
+VALUE rb_yield_splat_kw(VALUE, int);
+VALUE rb_yield_block(RB_BLOCK_CALL_FUNC_ARGLIST(yielded_arg, callback_arg)); /* rb_block_call_func */
+#define RB_NO_KEYWORDS 0
+#define RB_PASS_KEYWORDS 1
+#define RB_PASS_CALLED_KEYWORDS rb_keyword_given_p()
+int rb_keyword_given_p(void);
 int rb_block_given_p(void);
 void rb_need_block(void);
-VALUE rb_iterate(VALUE(*)(VALUE),VALUE,VALUE(*)(ANYARGS),VALUE);
+VALUE rb_iterate(VALUE(*)(VALUE),VALUE,rb_block_call_func_t,VALUE);
 VALUE rb_block_call(VALUE,ID,int,const VALUE*,rb_block_call_func_t,VALUE);
-VALUE rb_rescue(VALUE(*)(ANYARGS),VALUE,VALUE(*)(ANYARGS),VALUE);
-VALUE rb_rescue2(VALUE(*)(ANYARGS),VALUE,VALUE(*)(ANYARGS),VALUE,...);
-VALUE rb_ensure(VALUE(*)(ANYARGS),VALUE,VALUE(*)(ANYARGS),VALUE);
-VALUE rb_catch(const char*,VALUE(*)(ANYARGS),VALUE);
-VALUE rb_catch_obj(VALUE,VALUE(*)(ANYARGS),VALUE);
+VALUE rb_block_call_kw(VALUE,ID,int,const VALUE*,rb_block_call_func_t,VALUE,int);
+VALUE rb_rescue(VALUE(*)(VALUE),VALUE,VALUE(*)(VALUE,VALUE),VALUE);
+VALUE rb_rescue2(VALUE(*)(VALUE),VALUE,VALUE(*)(VALUE,VALUE),VALUE,...);
+VALUE rb_vrescue2(VALUE(*)(VALUE),VALUE,VALUE(*)(VALUE,VALUE),VALUE,va_list);
+VALUE rb_ensure(VALUE(*)(VALUE),VALUE,VALUE(*)(VALUE),VALUE);
+VALUE rb_catch(const char*,rb_block_call_func_t,VALUE);
+VALUE rb_catch_obj(VALUE,rb_block_call_func_t,VALUE);
 NORETURN(void rb_throw(const char*,VALUE));
 NORETURN(void rb_throw_obj(VALUE,VALUE));
 
@@ -1995,6 +2040,7 @@ RUBY_EXTERN VALUE rb_eSysStackError;
 RUBY_EXTERN VALUE rb_eRegexpError;
 RUBY_EXTERN VALUE rb_eEncodingError;
 RUBY_EXTERN VALUE rb_eEncCompatError;
+RUBY_EXTERN VALUE rb_eNoMatchingPatternError;
 
 RUBY_EXTERN VALUE rb_eScriptError;
 RUBY_EXTERN VALUE rb_eNameError;
@@ -2094,11 +2140,54 @@ rb_array_len(VALUE a)
 # define FIX_CONST_VALUE_PTR(x) (x)
 #endif
 
+/* internal function. do not use this function */
 static inline const VALUE *
-rb_array_const_ptr(VALUE a)
+rb_array_const_ptr_transient(VALUE a)
 {
     return FIX_CONST_VALUE_PTR((RBASIC(a)->flags & RARRAY_EMBED_FLAG) ?
 	RARRAY(a)->as.ary : RARRAY(a)->as.heap.ptr);
+}
+
+/* internal function. do not use this function */
+static inline const VALUE *
+rb_array_const_ptr(VALUE a)
+{
+#if USE_TRANSIENT_HEAP
+    void rb_ary_detransient(VALUE a);
+
+    if (RARRAY_TRANSIENT_P(a)) {
+        rb_ary_detransient(a);
+    }
+#endif
+    return rb_array_const_ptr_transient(a);
+}
+
+/* internal function. do not use this function */
+static inline VALUE *
+rb_array_ptr_use_start(VALUE a, int allow_transient)
+{
+    VALUE *rb_ary_ptr_use_start(VALUE ary);
+
+#if USE_TRANSIENT_HEAP
+    if (!allow_transient) {
+        if (RARRAY_TRANSIENT_P(a)) {
+            void rb_ary_detransient(VALUE a);
+            rb_ary_detransient(a);
+        }
+    }
+#endif
+    (void)allow_transient;
+
+    return rb_ary_ptr_use_start(a);
+}
+
+/* internal function. do not use this function */
+static inline void
+rb_array_ptr_use_end(VALUE a, int allow_transient)
+{
+    void rb_ary_ptr_use_end(VALUE a);
+    rb_ary_ptr_use_end(a);
+    (void)allow_transient;
 }
 
 #if defined(EXTLIB) && defined(USE_DLN_A_OUT)
@@ -2128,6 +2217,7 @@ int ruby_native_thread_p(void);
 #define RUBY_EVENT_THREAD_BEGIN      0x0400
 #define RUBY_EVENT_THREAD_END        0x0800
 #define RUBY_EVENT_FIBER_SWITCH      0x1000
+#define RUBY_EVENT_SCRIPT_COMPILED   0x2000
 #define RUBY_EVENT_TRACEPOINT_ALL    0xffff
 
 /* special events */
@@ -2183,6 +2273,9 @@ static inline int rb_toupper(int c) { return rb_islower(c) ? (c&0x5f) : c; }
 #define ISALPHA(c) rb_isalpha(c)
 #define ISDIGIT(c) rb_isdigit(c)
 #define ISXDIGIT(c) rb_isxdigit(c)
+#define ISBLANK(c) rb_isblank(c)
+#define ISCNTRL(c) rb_iscntrl(c)
+#define ISPUNCT(c) rb_ispunct(c)
 #endif
 #define TOUPPER(c) rb_toupper(c)
 #define TOLOWER(c) rb_tolower(c)
@@ -2200,83 +2293,87 @@ unsigned long ruby_strtoul(const char *str, char **endptr, int base);
 PRINTF_ARGS(int ruby_snprintf(char *str, size_t n, char const *fmt, ...), 3, 4);
 int ruby_vsnprintf(char *str, size_t n, char const *fmt, va_list ap);
 
+static inline int
+rb_scan_args_keyword_p(int kw_flag, VALUE last)
+{
+    switch (kw_flag) {
+      case RB_SCAN_ARGS_PASS_CALLED_KEYWORDS:
+	return rb_keyword_given_p();
+      case RB_SCAN_ARGS_KEYWORDS:
+	return 1;
+      case RB_SCAN_ARGS_LAST_HASH_KEYWORDS:
+	return RB_TYPE_P(last, T_HASH);
+    }
+    return 0;
+}
+
 #if defined(HAVE_BUILTIN___BUILTIN_CHOOSE_EXPR_CONSTANT_P) && defined(HAVE_VA_ARGS_MACRO) && defined(__OPTIMIZE__)
 # define rb_scan_args(argc,argvp,fmt,...) \
     __builtin_choose_expr(__builtin_constant_p(fmt), \
         rb_scan_args0(argc,argvp,fmt,\
 		      (sizeof((VALUE*[]){__VA_ARGS__})/sizeof(VALUE*)), \
 		      ((VALUE*[]){__VA_ARGS__})), \
-        rb_scan_args(argc,argvp,fmt,__VA_ARGS__))
+        rb_scan_args(argc,argvp,fmt,##__VA_ARGS__))
+# define rb_scan_args_kw(kw_flag,argc,argvp,fmt,...) \
+    __builtin_choose_expr(__builtin_constant_p(fmt), \
+	rb_scan_args_kw0(kw_flag,argc,argvp,fmt,	\
+		      (sizeof((VALUE*[]){__VA_ARGS__})/sizeof(VALUE*)), \
+		      ((VALUE*[]){__VA_ARGS__})), \
+	rb_scan_args_kw(kw_flag,argc,argvp,fmt,##__VA_ARGS__))
 # if HAVE_ATTRIBUTE_ERRORFUNC
-ERRORFUNC(("bad scan arg format"), int rb_scan_args_bad_format(const char*));
-ERRORFUNC(("variable argument length doesn't match"), int rb_scan_args_length_mismatch(const char*,int));
+ERRORFUNC(("bad scan arg format"), void rb_scan_args_bad_format(const char*));
+ERRORFUNC(("variable argument length doesn't match"), void rb_scan_args_length_mismatch(const char*,int));
 # else
-#   define rb_scan_args_bad_format(fmt) 0
-#   define rb_scan_args_length_mismatch(fmt, varc) 0
+#   define rb_scan_args_bad_format(fmt) ((void)0)
+#   define rb_scan_args_length_mismatch(fmt, varc) ((void)0)
 # endif
 
 # define rb_scan_args_isdigit(c) ((unsigned char)((c)-'0')<10)
 
-#if !defined(__has_attribute)
-#define __has_attribute(x) 0
-#endif
-# if __has_attribute(diagnose_if)
-#  define rb_scan_args_count_end(fmt, ofs, varc, vari) \
-     (fmt[ofs] ? rb_scan_args_bad_format(fmt) : (vari))
-# else
-#  define rb_scan_args_count_end(fmt, ofs, varc, vari) \
-     ((vari)/(!fmt[ofs] || rb_scan_args_bad_format(fmt)))
-# endif
+#  define rb_scan_args_count_end(fmt, ofs, vari) \
+     ((fmt)[ofs] ? -1 : (vari))
 
-# define rb_scan_args_count_block(fmt, ofs, varc, vari) \
-    (fmt[ofs]!='&' ? \
-     rb_scan_args_count_end(fmt, ofs, varc, vari) : \
-     rb_scan_args_count_end(fmt, ofs+1, varc, vari+1))
+# define rb_scan_args_count_block(fmt, ofs, vari) \
+    ((fmt)[ofs]!='&' ? \
+     rb_scan_args_count_end(fmt, ofs, vari) : \
+     rb_scan_args_count_end(fmt, (ofs)+1, (vari)+1))
 
-# define rb_scan_args_count_hash(fmt, ofs, varc, vari) \
-    (fmt[ofs]!=':' ? \
-     rb_scan_args_count_block(fmt, ofs, varc, vari) : \
-     rb_scan_args_count_block(fmt, ofs+1, varc, vari+1))
+# define rb_scan_args_count_hash(fmt, ofs, vari) \
+    ((fmt)[ofs]!=':' ? \
+     rb_scan_args_count_block(fmt, ofs, vari) : \
+     rb_scan_args_count_block(fmt, (ofs)+1, (vari)+1))
 
-# define rb_scan_args_count_trail(fmt, ofs, varc, vari) \
-    (!rb_scan_args_isdigit(fmt[ofs]) ? \
-     rb_scan_args_count_hash(fmt, ofs, varc, vari) : \
-     rb_scan_args_count_hash(fmt, ofs+1, varc, vari+(fmt[ofs]-'0')))
+# define rb_scan_args_count_trail(fmt, ofs, vari) \
+    (!rb_scan_args_isdigit((fmt)[ofs]) ? \
+     rb_scan_args_count_hash(fmt, ofs, vari) : \
+     rb_scan_args_count_hash(fmt, (ofs)+1, (vari)+((fmt)[ofs]-'0')))
 
-# define rb_scan_args_count_var(fmt, ofs, varc, vari) \
-    (fmt[ofs]!='*' ? \
-     rb_scan_args_count_trail(fmt, ofs, varc, vari) : \
-     rb_scan_args_count_trail(fmt, ofs+1, varc, vari+1))
+# define rb_scan_args_count_var(fmt, ofs, vari) \
+    ((fmt)[ofs]!='*' ? \
+     rb_scan_args_count_trail(fmt, ofs, vari) : \
+     rb_scan_args_count_trail(fmt, (ofs)+1, (vari)+1))
 
-# define rb_scan_args_count_opt(fmt, ofs, varc, vari) \
-    (!rb_scan_args_isdigit(fmt[1]) ? \
-     rb_scan_args_count_var(fmt, ofs, varc, vari) : \
-     rb_scan_args_count_var(fmt, ofs+1, varc, vari+fmt[ofs]-'0'))
+# define rb_scan_args_count_opt(fmt, ofs, vari) \
+    (!rb_scan_args_isdigit((fmt)[ofs]) ? \
+     rb_scan_args_count_var(fmt, ofs, vari) : \
+     rb_scan_args_count_var(fmt, (ofs)+1, (vari)+(fmt)[ofs]-'0'))
 
-# define rb_scan_args_count(fmt, varc) \
-    (!rb_scan_args_isdigit(fmt[0]) ? \
-      rb_scan_args_count_var(fmt, 0, varc, 0) : \
-      rb_scan_args_count_opt(fmt, 1, varc, fmt[0]-'0'))
+# define rb_scan_args_count_lead(fmt, ofs, vari) \
+    (!rb_scan_args_isdigit((fmt)[ofs]) ? \
+     rb_scan_args_count_var(fmt, ofs, vari) : \
+     rb_scan_args_count_opt(fmt, (ofs)+1, (vari)+(fmt)[ofs]-'0'))
 
-# define rb_scan_args_verify_count(fmt, varc) \
-    ((varc)/(rb_scan_args_count(fmt, varc) == (varc) || \
-     rb_scan_args_length_mismatch(fmt, varc)))
+# define rb_scan_args_count(fmt) rb_scan_args_count_lead(fmt, 0, 0)
 
 # if defined(__has_attribute) && __has_attribute(diagnose_if)
-#  define rb_scan_args_verify(fmt, varc) 0
-# elif defined(__GNUC__)
-# define rb_scan_args_verify(fmt, varc) \
-    __extension__ ({ \
-	int verify; \
-	_Pragma("GCC diagnostic push"); \
-	_Pragma("GCC diagnostic ignored \"-Warray-bounds\""); \
-	verify = rb_scan_args_verify_count(fmt, varc); \
-	_Pragma("GCC diagnostic pop"); \
-	verify; \
-    })
+#  define rb_scan_args_verify(fmt, varc) (void)0
 # else
 # define rb_scan_args_verify(fmt, varc) \
-    rb_scan_args_verify_count(fmt, varc)
+    (sizeof(char[1-2*(rb_scan_args_count(fmt)<0)])!=1 ? \
+     rb_scan_args_bad_format(fmt) : \
+     sizeof(char[1-2*(rb_scan_args_count(fmt)!=(varc))])!=1 ? \
+     rb_scan_args_length_mismatch(fmt, varc) : \
+     (void)0)
 # endif
 
 ALWAYS_INLINE(static int rb_scan_args_lead_p(const char *fmt));
@@ -2380,7 +2477,16 @@ rb_scan_args_end_idx(const char *fmt)
 /* NOTE: Use `char *fmt` instead of `const char *fmt` because of clang's bug*/
 /* https://bugs.llvm.org/show_bug.cgi?id=38095 */
 # define rb_scan_args0(argc, argv, fmt, varc, vars) \
-    rb_scan_args_set(argc, argv, \
+    rb_scan_args_set(RB_SCAN_ARGS_PASS_CALLED_KEYWORDS, argc, argv, \
+		     rb_scan_args_n_lead(fmt), \
+		     rb_scan_args_n_opt(fmt), \
+		     rb_scan_args_n_trail(fmt), \
+		     rb_scan_args_f_var(fmt), \
+		     rb_scan_args_f_hash(fmt), \
+		     rb_scan_args_f_block(fmt), \
+		     (rb_scan_args_verify(fmt, varc), vars), (char *)fmt, varc)
+# define rb_scan_args_kw0(kw_flag, argc, argv, fmt, varc, vars) \
+    rb_scan_args_set(kw_flag, argc, argv, \
 		     rb_scan_args_n_lead(fmt), \
 		     rb_scan_args_n_opt(fmt), \
 		     rb_scan_args_n_trail(fmt), \
@@ -2389,60 +2495,48 @@ rb_scan_args_end_idx(const char *fmt)
 		     rb_scan_args_f_block(fmt), \
 		     (rb_scan_args_verify(fmt, varc), vars), (char *)fmt, varc)
 ALWAYS_INLINE(static int
-rb_scan_args_set(int argc, const VALUE *argv,
+rb_scan_args_set(int kw_flag, int argc, const VALUE *argv,
 		 int n_lead, int n_opt, int n_trail,
 		 int f_var, int f_hash, int f_block,
-		 VALUE *vars[], char *fmt, int varc));
+		 VALUE *vars[], const char *fmt, int varc));
 
 inline int
-rb_scan_args_set(int argc, const VALUE *argv,
+rb_scan_args_set(int kw_flag, int argc, const VALUE *argv,
 		 int n_lead, int n_opt, int n_trail,
 		 int f_var, int f_hash, int f_block,
-		 VALUE *vars[], RB_UNUSED_VAR(char *fmt), RB_UNUSED_VAR(int varc))
+		 VALUE *vars[], RB_UNUSED_VAR(const char *fmt), RB_UNUSED_VAR(int varc))
 # if defined(__has_attribute) && __has_attribute(diagnose_if)
-    __attribute__((diagnose_if(rb_scan_args_count(fmt,varc)==0,"bad scan arg format","error")))
-    __attribute__((diagnose_if(rb_scan_args_count(fmt,varc)!=varc,"variable argument length doesn't match","error")))
+    __attribute__((diagnose_if(rb_scan_args_count(fmt)<0,"bad scan arg format","error")))
+    __attribute__((diagnose_if(rb_scan_args_count(fmt)!=varc,"variable argument length doesn't match","error")))
 # endif
 {
-    int i, argi = 0, vari = 0, last_idx = -1;
-    VALUE *var, hash = Qnil, last_hash = 0;
+    int i, argi = 0, vari = 0;
+    VALUE *var, hash = Qnil;
     const int n_mand = n_lead + n_trail;
 
-    /* capture an option hash - phase 1: pop */
-    if (f_hash && n_mand < argc) {
+    if (f_hash && argc > 0) {
 	VALUE last = argv[argc - 1];
-
-	if (RB_NIL_P(last)) {
-	    /* nil is taken as an empty option hash only if it is not
-	       ambiguous; i.e. '*' is not specified and arguments are
-	       given more than sufficient */
-	    if (!f_var && n_mand + n_opt < argc)
-		argc--;
-	}
-	else {
-	    hash = rb_check_hash_type(last);
-	    if (!RB_NIL_P(hash)) {
-		VALUE opts = rb_extract_keywords(&hash);
-		if (!(last_hash = hash)) argc--;
-		else last_idx = argc - 1;
-		hash = opts ? opts : Qnil;
-	    }
+	if (rb_scan_args_keyword_p(kw_flag, last)) {
+	    hash = rb_hash_dup(last);
+	    argc--;
 	}
     }
 
-    rb_check_arity(argc, n_mand, f_var ? UNLIMITED_ARGUMENTS : n_mand + n_opt);
+    if (argc < n_mand) {
+        goto argc_error;
+    }
 
     /* capture leading mandatory arguments */
     for (i = n_lead; i-- > 0; ) {
 	var = vars[vari++];
-	if (var) *var = (argi == last_idx) ? last_hash : argv[argi];
+	if (var) *var = argv[argi];
 	argi++;
     }
     /* capture optional arguments */
     for (i = n_opt; i-- > 0; ) {
 	var = vars[vari++];
 	if (argi < argc - n_trail) {
-	    if (var) *var = (argi == last_idx) ? last_hash : argv[argi];
+	    if (var) *var = argv[argi];
 	    argi++;
 	}
 	else {
@@ -2455,11 +2549,7 @@ rb_scan_args_set(int argc, const VALUE *argv,
 
 	var = vars[vari++];
 	if (0 < n_var) {
-	    if (var) {
-		int f_last = (last_idx + 1 == argc - n_trail);
-		*var = rb_ary_new4(n_var-f_last, &argv[argi]);
-		if (f_last) rb_ary_push(*var, last_hash);
-	    }
+	    if (var) *var = rb_ary_new4(n_var, &argv[argi]);
 	    argi += n_var;
 	}
 	else {
@@ -2469,7 +2559,7 @@ rb_scan_args_set(int argc, const VALUE *argv,
     /* capture trailing mandatory arguments */
     for (i = n_trail; i-- > 0; ) {
 	var = vars[vari++];
-	if (var) *var = (argi == last_idx) ? last_hash : argv[argi];
+	if (var) *var = argv[argi];
 	argi++;
     }
     /* capture an option hash - phase 2: assignment */
@@ -2486,6 +2576,11 @@ rb_scan_args_set(int argc, const VALUE *argv,
 	else {
 	    *var = Qnil;
 	}
+    }
+
+    if (argi < argc) {
+      argc_error:
+        rb_error_arity(argc, n_mand, f_var ? UNLIMITED_ARGUMENTS : n_mand + n_opt);
     }
 
     return argc;
@@ -2510,7 +2605,7 @@ __extension__({ \
 	const VALUE rb_funcall_args[] = {__VA_ARGS__}; \
 	const int rb_funcall_nargs = \
 	    (int)(sizeof(rb_funcall_args) / sizeof(VALUE)); \
-	rb_funcallv(recv, mid, \
+        rb_funcallv(recv, mid, \
 	    rb_varargs_argc_check(rb_funcall_argc, rb_funcall_nargs), \
 	    rb_funcall_nargs ? rb_funcall_args : NULL); \
     })
@@ -2554,13 +2649,7 @@ void ruby_show_copyright(void);
     ruby_init_stack(&variable_in_this_stack_frame);
 /*! @} */
 
-#ifdef __ia64
-void ruby_init_stack(volatile VALUE*, void*);
-#define ruby_init_stack(addr) ruby_init_stack((addr), rb_ia64_bsp())
-#else
 void ruby_init_stack(volatile VALUE*);
-#endif
-#define Init_stack(addr) ruby_init_stack(addr)
 
 int ruby_setup(void);
 int ruby_cleanup(volatile int);
@@ -2593,9 +2682,213 @@ void ruby_sig_finalize(void);
 RUBY_SYMBOL_EXPORT_END
 
 #if defined(__cplusplus)
+#include "backward/cxxanyargs.hpp"
+#else
+
+#if defined(HAVE_BUILTIN___BUILTIN_TYPES_COMPATIBLE_P)
+# define rb_f_notimplement_p(f) __builtin_types_compatible_p(__typeof__(f),__typeof__(rb_f_notimplement))
+#else
+# define rb_f_notimplement_p(f) 0
+#endif
+
+#if defined(HAVE_BUILTIN___BUILTIN_CHOOSE_EXPR_CONSTANT_P)
+#define rb_define_method_if_constexpr(x, t, f)    __builtin_choose_expr(__builtin_choose_expr(__builtin_constant_p(x),(x),0),(t),(f))
+#endif
+
+#if defined(__has_attribute) && __has_attribute(transparent_union) && __has_attribute(unused) && __has_attribute(weakref) && __has_attribute(nonnull)
+#define RB_METHOD_DEFINITION_DECL(def, nonnull, ...) \
+__attribute__((__unused__, __weakref__(#def), __nonnull__ nonnull)) static void def ## m3(__VA_ARGS__, VALUE(*)(ANYARGS), int); \
+__attribute__((__unused__, __weakref__(#def), __nonnull__ nonnull)) static void def ## m2(__VA_ARGS__, VALUE(*)(VALUE, VALUE), int); \
+__attribute__((__unused__, __weakref__(#def), __nonnull__ nonnull)) static void def ## m1(__VA_ARGS__, VALUE(*)(int, union { VALUE *x; const VALUE *y; } __attribute__((__transparent_union__)), VALUE), int); \
+__attribute__((__unused__, __weakref__(#def), __nonnull__ nonnull)) static void def ##  0(__VA_ARGS__, VALUE(*)(VALUE), int); \
+__attribute__((__unused__, __weakref__(#def), __nonnull__ nonnull)) static void def ##  1(__VA_ARGS__, VALUE(*)(VALUE, VALUE), int); \
+__attribute__((__unused__, __weakref__(#def), __nonnull__ nonnull)) static void def ##  2(__VA_ARGS__, VALUE(*)(VALUE, VALUE, VALUE), int); \
+__attribute__((__unused__, __weakref__(#def), __nonnull__ nonnull)) static void def ##  3(__VA_ARGS__, VALUE(*)(VALUE, VALUE, VALUE, VALUE), int); \
+__attribute__((__unused__, __weakref__(#def), __nonnull__ nonnull)) static void def ##  4(__VA_ARGS__, VALUE(*)(VALUE, VALUE, VALUE, VALUE, VALUE), int); \
+__attribute__((__unused__, __weakref__(#def), __nonnull__ nonnull)) static void def ##  5(__VA_ARGS__, VALUE(*)(VALUE, VALUE, VALUE, VALUE, VALUE, VALUE), int); \
+__attribute__((__unused__, __weakref__(#def), __nonnull__ nonnull)) static void def ##  6(__VA_ARGS__, VALUE(*)(VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE), int); \
+__attribute__((__unused__, __weakref__(#def), __nonnull__ nonnull)) static void def ##  7(__VA_ARGS__, VALUE(*)(VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE), int); \
+__attribute__((__unused__, __weakref__(#def), __nonnull__ nonnull)) static void def ##  8(__VA_ARGS__, VALUE(*)(VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE), int); \
+__attribute__((__unused__, __weakref__(#def), __nonnull__ nonnull)) static void def ##  9(__VA_ARGS__, VALUE(*)(VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE), int); \
+__attribute__((__unused__, __weakref__(#def), __nonnull__ nonnull)) static void def ## 10(__VA_ARGS__, VALUE(*)(VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE), int); \
+__attribute__((__unused__, __weakref__(#def), __nonnull__ nonnull)) static void def ## 11(__VA_ARGS__, VALUE(*)(VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE), int); \
+__attribute__((__unused__, __weakref__(#def), __nonnull__ nonnull)) static void def ## 12(__VA_ARGS__, VALUE(*)(VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE), int); \
+__attribute__((__unused__, __weakref__(#def), __nonnull__ nonnull)) static void def ## 13(__VA_ARGS__, VALUE(*)(VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE), int); \
+__attribute__((__unused__, __weakref__(#def), __nonnull__ nonnull)) static void def ## 14(__VA_ARGS__, VALUE(*)(VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE), int); \
+__attribute__((__unused__, __weakref__(#def), __nonnull__ nonnull)) static void def ## 15(__VA_ARGS__, VALUE(*)(VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE, VALUE), int);
+#endif
+
+#if defined(RB_METHOD_DEFINITION_DECL) && !defined(_WIN32) && !defined(__CYGWIN__)
+
+RB_METHOD_DEFINITION_DECL(rb_define_method_id, (3), VALUE klass, ID name)
+#define rb_define_method_id_choose_prototype15(n)    rb_define_method_if_constexpr((n)==15,rb_define_method_id15,rb_define_method_idm3)
+#define rb_define_method_id_choose_prototype14(n)    rb_define_method_if_constexpr((n)==14,rb_define_method_id14,rb_define_method_id_choose_prototype15(n))
+#define rb_define_method_id_choose_prototype13(n)    rb_define_method_if_constexpr((n)==13,rb_define_method_id13,rb_define_method_id_choose_prototype14(n))
+#define rb_define_method_id_choose_prototype12(n)    rb_define_method_if_constexpr((n)==12,rb_define_method_id12,rb_define_method_id_choose_prototype13(n))
+#define rb_define_method_id_choose_prototype11(n)    rb_define_method_if_constexpr((n)==11,rb_define_method_id11,rb_define_method_id_choose_prototype12(n))
+#define rb_define_method_id_choose_prototype10(n)    rb_define_method_if_constexpr((n)==10,rb_define_method_id10,rb_define_method_id_choose_prototype11(n))
+#define rb_define_method_id_choose_prototype9(n)     rb_define_method_if_constexpr((n)== 9,rb_define_method_id9, rb_define_method_id_choose_prototype10(n))
+#define rb_define_method_id_choose_prototype8(n)     rb_define_method_if_constexpr((n)== 8,rb_define_method_id8, rb_define_method_id_choose_prototype9(n))
+#define rb_define_method_id_choose_prototype7(n)     rb_define_method_if_constexpr((n)== 7,rb_define_method_id7, rb_define_method_id_choose_prototype8(n))
+#define rb_define_method_id_choose_prototype6(n)     rb_define_method_if_constexpr((n)== 6,rb_define_method_id6, rb_define_method_id_choose_prototype7(n))
+#define rb_define_method_id_choose_prototype5(n)     rb_define_method_if_constexpr((n)== 5,rb_define_method_id5, rb_define_method_id_choose_prototype6(n))
+#define rb_define_method_id_choose_prototype4(n)     rb_define_method_if_constexpr((n)== 4,rb_define_method_id4, rb_define_method_id_choose_prototype5(n))
+#define rb_define_method_id_choose_prototype3(n)     rb_define_method_if_constexpr((n)== 3,rb_define_method_id3, rb_define_method_id_choose_prototype4(n))
+#define rb_define_method_id_choose_prototype2(n)     rb_define_method_if_constexpr((n)== 2,rb_define_method_id2, rb_define_method_id_choose_prototype3(n))
+#define rb_define_method_id_choose_prototype1(n)     rb_define_method_if_constexpr((n)== 1,rb_define_method_id1, rb_define_method_id_choose_prototype2(n))
+#define rb_define_method_id_choose_prototype0(n)     rb_define_method_if_constexpr((n)== 0,rb_define_method_id0, rb_define_method_id_choose_prototype1(n))
+#define rb_define_method_id_choose_prototypem1(n)    rb_define_method_if_constexpr((n)==-1,rb_define_method_idm1,rb_define_method_id_choose_prototype0(n))
+#define rb_define_method_id_choose_prototypem2(n)    rb_define_method_if_constexpr((n)==-2,rb_define_method_idm2,rb_define_method_id_choose_prototypem1(n))
+#define rb_define_method_id_choose_prototypem3(n, f) rb_define_method_if_constexpr(rb_f_notimplement_p(f),rb_define_method_idm3,rb_define_method_id_choose_prototypem2(n))
+#define rb_define_method_id(klass, mid, func, arity) rb_define_method_id_choose_prototypem3((arity),(func))((klass),(mid),(func),(arity));
+
+RB_METHOD_DEFINITION_DECL(rb_define_protected_method, (2,3), VALUE klass, const char *name)
+#define rb_define_protected_method_choose_prototype15(n)    rb_define_method_if_constexpr((n)==15,rb_define_protected_method15,rb_define_protected_methodm3)
+#define rb_define_protected_method_choose_prototype14(n)    rb_define_method_if_constexpr((n)==14,rb_define_protected_method14,rb_define_protected_method_choose_prototype15(n))
+#define rb_define_protected_method_choose_prototype13(n)    rb_define_method_if_constexpr((n)==13,rb_define_protected_method13,rb_define_protected_method_choose_prototype14(n))
+#define rb_define_protected_method_choose_prototype12(n)    rb_define_method_if_constexpr((n)==12,rb_define_protected_method12,rb_define_protected_method_choose_prototype13(n))
+#define rb_define_protected_method_choose_prototype11(n)    rb_define_method_if_constexpr((n)==11,rb_define_protected_method11,rb_define_protected_method_choose_prototype12(n))
+#define rb_define_protected_method_choose_prototype10(n)    rb_define_method_if_constexpr((n)==10,rb_define_protected_method10,rb_define_protected_method_choose_prototype11(n))
+#define rb_define_protected_method_choose_prototype9(n)     rb_define_method_if_constexpr((n)== 9,rb_define_protected_method9, rb_define_protected_method_choose_prototype10(n))
+#define rb_define_protected_method_choose_prototype8(n)     rb_define_method_if_constexpr((n)== 8,rb_define_protected_method8, rb_define_protected_method_choose_prototype9(n))
+#define rb_define_protected_method_choose_prototype7(n)     rb_define_method_if_constexpr((n)== 7,rb_define_protected_method7, rb_define_protected_method_choose_prototype8(n))
+#define rb_define_protected_method_choose_prototype6(n)     rb_define_method_if_constexpr((n)== 6,rb_define_protected_method6, rb_define_protected_method_choose_prototype7(n))
+#define rb_define_protected_method_choose_prototype5(n)     rb_define_method_if_constexpr((n)== 5,rb_define_protected_method5, rb_define_protected_method_choose_prototype6(n))
+#define rb_define_protected_method_choose_prototype4(n)     rb_define_method_if_constexpr((n)== 4,rb_define_protected_method4, rb_define_protected_method_choose_prototype5(n))
+#define rb_define_protected_method_choose_prototype3(n)     rb_define_method_if_constexpr((n)== 3,rb_define_protected_method3, rb_define_protected_method_choose_prototype4(n))
+#define rb_define_protected_method_choose_prototype2(n)     rb_define_method_if_constexpr((n)== 2,rb_define_protected_method2, rb_define_protected_method_choose_prototype3(n))
+#define rb_define_protected_method_choose_prototype1(n)     rb_define_method_if_constexpr((n)== 1,rb_define_protected_method1, rb_define_protected_method_choose_prototype2(n))
+#define rb_define_protected_method_choose_prototype0(n)     rb_define_method_if_constexpr((n)== 0,rb_define_protected_method0, rb_define_protected_method_choose_prototype1(n))
+#define rb_define_protected_method_choose_prototypem1(n)    rb_define_method_if_constexpr((n)==-1,rb_define_protected_methodm1,rb_define_protected_method_choose_prototype0(n))
+#define rb_define_protected_method_choose_prototypem2(n)    rb_define_method_if_constexpr((n)==-2,rb_define_protected_methodm2,rb_define_protected_method_choose_prototypem1(n))
+#define rb_define_protected_method_choose_prototypem3(n, f) rb_define_method_if_constexpr(rb_f_notimplement_p(f),rb_define_protected_methodm3,rb_define_protected_method_choose_prototypem2(n))
+#define rb_define_protected_method(klass, mid, func, arity) rb_define_protected_method_choose_prototypem3((arity),(func))((klass),(mid),(func),(arity));
+
+RB_METHOD_DEFINITION_DECL(rb_define_private_method, (2,3), VALUE klass, const char *name)
+#define rb_define_private_method_choose_prototype15(n)    rb_define_method_if_constexpr((n)==15,rb_define_private_method15,rb_define_private_methodm3)
+#define rb_define_private_method_choose_prototype14(n)    rb_define_method_if_constexpr((n)==14,rb_define_private_method14,rb_define_private_method_choose_prototype15(n))
+#define rb_define_private_method_choose_prototype13(n)    rb_define_method_if_constexpr((n)==13,rb_define_private_method13,rb_define_private_method_choose_prototype14(n))
+#define rb_define_private_method_choose_prototype12(n)    rb_define_method_if_constexpr((n)==12,rb_define_private_method12,rb_define_private_method_choose_prototype13(n))
+#define rb_define_private_method_choose_prototype11(n)    rb_define_method_if_constexpr((n)==11,rb_define_private_method11,rb_define_private_method_choose_prototype12(n))
+#define rb_define_private_method_choose_prototype10(n)    rb_define_method_if_constexpr((n)==10,rb_define_private_method10,rb_define_private_method_choose_prototype11(n))
+#define rb_define_private_method_choose_prototype9(n)     rb_define_method_if_constexpr((n)== 9,rb_define_private_method9, rb_define_private_method_choose_prototype10(n))
+#define rb_define_private_method_choose_prototype8(n)     rb_define_method_if_constexpr((n)== 8,rb_define_private_method8, rb_define_private_method_choose_prototype9(n))
+#define rb_define_private_method_choose_prototype7(n)     rb_define_method_if_constexpr((n)== 7,rb_define_private_method7, rb_define_private_method_choose_prototype8(n))
+#define rb_define_private_method_choose_prototype6(n)     rb_define_method_if_constexpr((n)== 6,rb_define_private_method6, rb_define_private_method_choose_prototype7(n))
+#define rb_define_private_method_choose_prototype5(n)     rb_define_method_if_constexpr((n)== 5,rb_define_private_method5, rb_define_private_method_choose_prototype6(n))
+#define rb_define_private_method_choose_prototype4(n)     rb_define_method_if_constexpr((n)== 4,rb_define_private_method4, rb_define_private_method_choose_prototype5(n))
+#define rb_define_private_method_choose_prototype3(n)     rb_define_method_if_constexpr((n)== 3,rb_define_private_method3, rb_define_private_method_choose_prototype4(n))
+#define rb_define_private_method_choose_prototype2(n)     rb_define_method_if_constexpr((n)== 2,rb_define_private_method2, rb_define_private_method_choose_prototype3(n))
+#define rb_define_private_method_choose_prototype1(n)     rb_define_method_if_constexpr((n)== 1,rb_define_private_method1, rb_define_private_method_choose_prototype2(n))
+#define rb_define_private_method_choose_prototype0(n)     rb_define_method_if_constexpr((n)== 0,rb_define_private_method0, rb_define_private_method_choose_prototype1(n))
+#define rb_define_private_method_choose_prototypem1(n)    rb_define_method_if_constexpr((n)==-1,rb_define_private_methodm1,rb_define_private_method_choose_prototype0(n))
+#define rb_define_private_method_choose_prototypem2(n)    rb_define_method_if_constexpr((n)==-2,rb_define_private_methodm2,rb_define_private_method_choose_prototypem1(n))
+#define rb_define_private_method_choose_prototypem3(n, f) rb_define_method_if_constexpr(rb_f_notimplement_p(f),rb_define_private_methodm3,rb_define_private_method_choose_prototypem2(n))
+#define rb_define_private_method(klass, mid, func, arity) rb_define_private_method_choose_prototypem3((arity),(func))((klass),(mid),(func),(arity));
+
+RB_METHOD_DEFINITION_DECL(rb_define_singleton_method, (2,3), VALUE klass, const char *name)
+#define rb_define_singleton_method_choose_prototype15(n)    rb_define_method_if_constexpr((n)==15,rb_define_singleton_method15,rb_define_singleton_methodm3)
+#define rb_define_singleton_method_choose_prototype14(n)    rb_define_method_if_constexpr((n)==14,rb_define_singleton_method14,rb_define_singleton_method_choose_prototype15(n))
+#define rb_define_singleton_method_choose_prototype13(n)    rb_define_method_if_constexpr((n)==13,rb_define_singleton_method13,rb_define_singleton_method_choose_prototype14(n))
+#define rb_define_singleton_method_choose_prototype12(n)    rb_define_method_if_constexpr((n)==12,rb_define_singleton_method12,rb_define_singleton_method_choose_prototype13(n))
+#define rb_define_singleton_method_choose_prototype11(n)    rb_define_method_if_constexpr((n)==11,rb_define_singleton_method11,rb_define_singleton_method_choose_prototype12(n))
+#define rb_define_singleton_method_choose_prototype10(n)    rb_define_method_if_constexpr((n)==10,rb_define_singleton_method10,rb_define_singleton_method_choose_prototype11(n))
+#define rb_define_singleton_method_choose_prototype9(n)     rb_define_method_if_constexpr((n)== 9,rb_define_singleton_method9, rb_define_singleton_method_choose_prototype10(n))
+#define rb_define_singleton_method_choose_prototype8(n)     rb_define_method_if_constexpr((n)== 8,rb_define_singleton_method8, rb_define_singleton_method_choose_prototype9(n))
+#define rb_define_singleton_method_choose_prototype7(n)     rb_define_method_if_constexpr((n)== 7,rb_define_singleton_method7, rb_define_singleton_method_choose_prototype8(n))
+#define rb_define_singleton_method_choose_prototype6(n)     rb_define_method_if_constexpr((n)== 6,rb_define_singleton_method6, rb_define_singleton_method_choose_prototype7(n))
+#define rb_define_singleton_method_choose_prototype5(n)     rb_define_method_if_constexpr((n)== 5,rb_define_singleton_method5, rb_define_singleton_method_choose_prototype6(n))
+#define rb_define_singleton_method_choose_prototype4(n)     rb_define_method_if_constexpr((n)== 4,rb_define_singleton_method4, rb_define_singleton_method_choose_prototype5(n))
+#define rb_define_singleton_method_choose_prototype3(n)     rb_define_method_if_constexpr((n)== 3,rb_define_singleton_method3, rb_define_singleton_method_choose_prototype4(n))
+#define rb_define_singleton_method_choose_prototype2(n)     rb_define_method_if_constexpr((n)== 2,rb_define_singleton_method2, rb_define_singleton_method_choose_prototype3(n))
+#define rb_define_singleton_method_choose_prototype1(n)     rb_define_method_if_constexpr((n)== 1,rb_define_singleton_method1, rb_define_singleton_method_choose_prototype2(n))
+#define rb_define_singleton_method_choose_prototype0(n)     rb_define_method_if_constexpr((n)== 0,rb_define_singleton_method0, rb_define_singleton_method_choose_prototype1(n))
+#define rb_define_singleton_method_choose_prototypem1(n)    rb_define_method_if_constexpr((n)==-1,rb_define_singleton_methodm1,rb_define_singleton_method_choose_prototype0(n))
+#define rb_define_singleton_method_choose_prototypem2(n)    rb_define_method_if_constexpr((n)==-2,rb_define_singleton_methodm2,rb_define_singleton_method_choose_prototypem1(n))
+#define rb_define_singleton_method_choose_prototypem3(n, f) rb_define_method_if_constexpr(rb_f_notimplement_p(f),rb_define_singleton_methodm3,rb_define_singleton_method_choose_prototypem2(n))
+#define rb_define_singleton_method(klass, mid, func, arity) rb_define_singleton_method_choose_prototypem3((arity),(func))((klass),(mid),(func),(arity));
+
+RB_METHOD_DEFINITION_DECL(rb_define_method, (2,3), VALUE klass, const char *name)
+#define rb_define_method_choose_prototype15(n)    rb_define_method_if_constexpr((n)==15,rb_define_method15,rb_define_methodm3)
+#define rb_define_method_choose_prototype14(n)    rb_define_method_if_constexpr((n)==14,rb_define_method14,rb_define_method_choose_prototype15(n))
+#define rb_define_method_choose_prototype13(n)    rb_define_method_if_constexpr((n)==13,rb_define_method13,rb_define_method_choose_prototype14(n))
+#define rb_define_method_choose_prototype12(n)    rb_define_method_if_constexpr((n)==12,rb_define_method12,rb_define_method_choose_prototype13(n))
+#define rb_define_method_choose_prototype11(n)    rb_define_method_if_constexpr((n)==11,rb_define_method11,rb_define_method_choose_prototype12(n))
+#define rb_define_method_choose_prototype10(n)    rb_define_method_if_constexpr((n)==10,rb_define_method10,rb_define_method_choose_prototype11(n))
+#define rb_define_method_choose_prototype9(n)     rb_define_method_if_constexpr((n)== 9,rb_define_method9, rb_define_method_choose_prototype10(n))
+#define rb_define_method_choose_prototype8(n)     rb_define_method_if_constexpr((n)== 8,rb_define_method8, rb_define_method_choose_prototype9(n))
+#define rb_define_method_choose_prototype7(n)     rb_define_method_if_constexpr((n)== 7,rb_define_method7, rb_define_method_choose_prototype8(n))
+#define rb_define_method_choose_prototype6(n)     rb_define_method_if_constexpr((n)== 6,rb_define_method6, rb_define_method_choose_prototype7(n))
+#define rb_define_method_choose_prototype5(n)     rb_define_method_if_constexpr((n)== 5,rb_define_method5, rb_define_method_choose_prototype6(n))
+#define rb_define_method_choose_prototype4(n)     rb_define_method_if_constexpr((n)== 4,rb_define_method4, rb_define_method_choose_prototype5(n))
+#define rb_define_method_choose_prototype3(n)     rb_define_method_if_constexpr((n)== 3,rb_define_method3, rb_define_method_choose_prototype4(n))
+#define rb_define_method_choose_prototype2(n)     rb_define_method_if_constexpr((n)== 2,rb_define_method2, rb_define_method_choose_prototype3(n))
+#define rb_define_method_choose_prototype1(n)     rb_define_method_if_constexpr((n)== 1,rb_define_method1, rb_define_method_choose_prototype2(n))
+#define rb_define_method_choose_prototype0(n)     rb_define_method_if_constexpr((n)== 0,rb_define_method0, rb_define_method_choose_prototype1(n))
+#define rb_define_method_choose_prototypem1(n)    rb_define_method_if_constexpr((n)==-1,rb_define_methodm1,rb_define_method_choose_prototype0(n))
+#define rb_define_method_choose_prototypem2(n)    rb_define_method_if_constexpr((n)==-2,rb_define_methodm2,rb_define_method_choose_prototypem1(n))
+#define rb_define_method_choose_prototypem3(n, f) rb_define_method_if_constexpr(rb_f_notimplement_p(f),rb_define_methodm3,rb_define_method_choose_prototypem2(n))
+#define rb_define_method(klass, mid, func, arity) rb_define_method_choose_prototypem3((arity),(func))((klass),(mid),(func),(arity));
+
+RB_METHOD_DEFINITION_DECL(rb_define_module_function, (2,3), VALUE klass, const char *name)
+#define rb_define_module_function_choose_prototype15(n)    rb_define_method_if_constexpr((n)==15,rb_define_module_function15,rb_define_module_functionm3)
+#define rb_define_module_function_choose_prototype14(n)    rb_define_method_if_constexpr((n)==14,rb_define_module_function14,rb_define_module_function_choose_prototype15(n))
+#define rb_define_module_function_choose_prototype13(n)    rb_define_method_if_constexpr((n)==13,rb_define_module_function13,rb_define_module_function_choose_prototype14(n))
+#define rb_define_module_function_choose_prototype12(n)    rb_define_method_if_constexpr((n)==12,rb_define_module_function12,rb_define_module_function_choose_prototype13(n))
+#define rb_define_module_function_choose_prototype11(n)    rb_define_method_if_constexpr((n)==11,rb_define_module_function11,rb_define_module_function_choose_prototype12(n))
+#define rb_define_module_function_choose_prototype10(n)    rb_define_method_if_constexpr((n)==10,rb_define_module_function10,rb_define_module_function_choose_prototype11(n))
+#define rb_define_module_function_choose_prototype9(n)     rb_define_method_if_constexpr((n)== 9,rb_define_module_function9, rb_define_module_function_choose_prototype10(n))
+#define rb_define_module_function_choose_prototype8(n)     rb_define_method_if_constexpr((n)== 8,rb_define_module_function8, rb_define_module_function_choose_prototype9(n))
+#define rb_define_module_function_choose_prototype7(n)     rb_define_method_if_constexpr((n)== 7,rb_define_module_function7, rb_define_module_function_choose_prototype8(n))
+#define rb_define_module_function_choose_prototype6(n)     rb_define_method_if_constexpr((n)== 6,rb_define_module_function6, rb_define_module_function_choose_prototype7(n))
+#define rb_define_module_function_choose_prototype5(n)     rb_define_method_if_constexpr((n)== 5,rb_define_module_function5, rb_define_module_function_choose_prototype6(n))
+#define rb_define_module_function_choose_prototype4(n)     rb_define_method_if_constexpr((n)== 4,rb_define_module_function4, rb_define_module_function_choose_prototype5(n))
+#define rb_define_module_function_choose_prototype3(n)     rb_define_method_if_constexpr((n)== 3,rb_define_module_function3, rb_define_module_function_choose_prototype4(n))
+#define rb_define_module_function_choose_prototype2(n)     rb_define_method_if_constexpr((n)== 2,rb_define_module_function2, rb_define_module_function_choose_prototype3(n))
+#define rb_define_module_function_choose_prototype1(n)     rb_define_method_if_constexpr((n)== 1,rb_define_module_function1, rb_define_module_function_choose_prototype2(n))
+#define rb_define_module_function_choose_prototype0(n)     rb_define_method_if_constexpr((n)== 0,rb_define_module_function0, rb_define_module_function_choose_prototype1(n))
+#define rb_define_module_function_choose_prototypem1(n)    rb_define_method_if_constexpr((n)==-1,rb_define_module_functionm1,rb_define_module_function_choose_prototype0(n))
+#define rb_define_module_function_choose_prototypem2(n)    rb_define_method_if_constexpr((n)==-2,rb_define_module_functionm2,rb_define_module_function_choose_prototypem1(n))
+#define rb_define_module_function_choose_prototypem3(n, f) rb_define_method_if_constexpr(rb_f_notimplement_p(f),rb_define_module_functionm3,rb_define_module_function_choose_prototypem2(n))
+#define rb_define_module_function(klass, mid, func, arity) rb_define_module_function_choose_prototypem3((arity),(func))((klass),(mid),(func),(arity));
+
+RB_METHOD_DEFINITION_DECL(rb_define_global_function, (1,2), const char *name)
+#define rb_define_global_function_choose_prototype15(n)    rb_define_method_if_constexpr((n)==15,rb_define_global_function15,rb_define_global_functionm3)
+#define rb_define_global_function_choose_prototype14(n)    rb_define_method_if_constexpr((n)==14,rb_define_global_function14,rb_define_global_function_choose_prototype15(n))
+#define rb_define_global_function_choose_prototype13(n)    rb_define_method_if_constexpr((n)==13,rb_define_global_function13,rb_define_global_function_choose_prototype14(n))
+#define rb_define_global_function_choose_prototype12(n)    rb_define_method_if_constexpr((n)==12,rb_define_global_function12,rb_define_global_function_choose_prototype13(n))
+#define rb_define_global_function_choose_prototype11(n)    rb_define_method_if_constexpr((n)==11,rb_define_global_function11,rb_define_global_function_choose_prototype12(n))
+#define rb_define_global_function_choose_prototype10(n)    rb_define_method_if_constexpr((n)==10,rb_define_global_function10,rb_define_global_function_choose_prototype11(n))
+#define rb_define_global_function_choose_prototype9(n)     rb_define_method_if_constexpr((n)== 9,rb_define_global_function9, rb_define_global_function_choose_prototype10(n))
+#define rb_define_global_function_choose_prototype8(n)     rb_define_method_if_constexpr((n)== 8,rb_define_global_function8, rb_define_global_function_choose_prototype9(n))
+#define rb_define_global_function_choose_prototype7(n)     rb_define_method_if_constexpr((n)== 7,rb_define_global_function7, rb_define_global_function_choose_prototype8(n))
+#define rb_define_global_function_choose_prototype6(n)     rb_define_method_if_constexpr((n)== 6,rb_define_global_function6, rb_define_global_function_choose_prototype7(n))
+#define rb_define_global_function_choose_prototype5(n)     rb_define_method_if_constexpr((n)== 5,rb_define_global_function5, rb_define_global_function_choose_prototype6(n))
+#define rb_define_global_function_choose_prototype4(n)     rb_define_method_if_constexpr((n)== 4,rb_define_global_function4, rb_define_global_function_choose_prototype5(n))
+#define rb_define_global_function_choose_prototype3(n)     rb_define_method_if_constexpr((n)== 3,rb_define_global_function3, rb_define_global_function_choose_prototype4(n))
+#define rb_define_global_function_choose_prototype2(n)     rb_define_method_if_constexpr((n)== 2,rb_define_global_function2, rb_define_global_function_choose_prototype3(n))
+#define rb_define_global_function_choose_prototype1(n)     rb_define_method_if_constexpr((n)== 1,rb_define_global_function1, rb_define_global_function_choose_prototype2(n))
+#define rb_define_global_function_choose_prototype0(n)     rb_define_method_if_constexpr((n)== 0,rb_define_global_function0, rb_define_global_function_choose_prototype1(n))
+#define rb_define_global_function_choose_prototypem1(n)    rb_define_method_if_constexpr((n)==-1,rb_define_global_functionm1,rb_define_global_function_choose_prototype0(n))
+#define rb_define_global_function_choose_prototypem2(n)    rb_define_method_if_constexpr((n)==-2,rb_define_global_functionm2,rb_define_global_function_choose_prototypem1(n))
+#define rb_define_global_function_choose_prototypem3(n, f) rb_define_method_if_constexpr(rb_f_notimplement_p(f),rb_define_global_functionm3,rb_define_global_function_choose_prototypem2(n))
+#define rb_define_global_function(mid, func, arity) rb_define_global_function_choose_prototypem3((arity),(func))((mid),(func),(arity));
+
+#endif  /* ! _WIN32 && ! __CYGWIN__ */
+
+#endif /* __cplusplus */
+
+#if defined(RUBY_DEVEL) && RUBY_DEVEL && (!defined(__cplusplus) || defined(RB_METHOD_DEFINITION_DECL))
+# define RUBY_METHOD_FUNC(func) (func)
+#else
+# define RUBY_METHOD_FUNC(func) ((VALUE (*)(ANYARGS))(func))
+#endif
+
+#ifdef __cplusplus
 #if 0
 { /* satisfy cc-mode */
 #endif
-}  /* extern "C" { */
+}  /* extern "C++" { */
 #endif
+
 #endif /* RUBY_RUBY_H */

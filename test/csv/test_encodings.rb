@@ -1,14 +1,9 @@
-#!/usr/bin/env ruby -w
-# encoding: UTF-8
+# -*- coding: utf-8 -*-
 # frozen_string_literal: false
 
-# tc_encodings.rb
-#
-# Created by James Edward Gray II on 2005-10-31.
+require_relative "helper"
 
-require_relative "base"
-
-class TestCSV::Encodings < TestCSV
+class TestCSVEncodings < Test::Unit::TestCase
   extend DifferentOFS
 
   def setup
@@ -261,35 +256,38 @@ class TestCSV::Encodings < TestCSV
   end
 
   def test_invalid_encoding_row_error
-    csv = CSV.new("invalid,\xF8\r\nvalid,x\r\n".force_encoding("UTF-8"),
-                  encoding: "UTF-8")
+    csv = CSV.new("valid,x\rinvalid,\xF8\r".force_encoding("UTF-8"),
+                  encoding: "UTF-8", row_sep: "\r")
     error = assert_raise(CSV::MalformedCSVError) do
       csv.shift
+      csv.shift
     end
-    assert_equal("Invalid byte sequence in UTF-8 in line 1.",
+    assert_equal("Invalid byte sequence in UTF-8 in line 2.",
                  error.message)
   end
 
   private
 
-  def assert_parses(fields, encoding, options = { })
+  def assert_parses(fields, encoding, **options)
     encoding = Encoding.find(encoding) unless encoding.is_a? Encoding
     orig_fields = fields
-    fields   = encode_ary(fields, encoding)
-    data = ary_to_data(fields, options)
-    parsed   = CSV.parse(data, options)
+    fields = encode_ary(fields, encoding)
+    data = ary_to_data(fields, **options)
+    parsed = CSV.parse(data, **options)
     assert_equal(fields, parsed)
     parsed.flatten.each_with_index do |field, i|
       assert_equal(encoding, field.encoding, "Field[#{i + 1}] was transcoded.")
     end
     File.open(@temp_csv_path, "wb") {|f| f.print(data)}
-    CSV.open(@temp_csv_path, "rb:#{encoding}", options) do |csv|
+    CSV.open(@temp_csv_path, "rb:#{encoding}", **options) do |csv|
       csv.each_with_index do |row, i|
         assert_equal(fields[i], row)
       end
     end
     begin
-      CSV.open(@temp_csv_path, "rb:#{encoding}:#{__ENCODING__}", options) do |csv|
+      CSV.open(@temp_csv_path,
+               "rb:#{encoding}:#{__ENCODING__}",
+               **options) do |csv|
         csv.each_with_index do |row, i|
           assert_equal(orig_fields[i], row)
         end
@@ -297,7 +295,7 @@ class TestCSV::Encodings < TestCSV
     rescue Encoding::ConverterNotFoundError
     end
     options[:encoding] = encoding.name
-    CSV.open(@temp_csv_path, options) do |csv|
+    CSV.open(@temp_csv_path, **options) do |csv|
       csv.each_with_index do |row, i|
         assert_equal(fields[i], row)
       end
@@ -306,7 +304,7 @@ class TestCSV::Encodings < TestCSV
     options[:external_encoding] = encoding.name
     options[:internal_encoding] = __ENCODING__.name
     begin
-      CSV.open(@temp_csv_path, options) do |csv|
+      CSV.open(@temp_csv_path, **options) do |csv|
         csv.each_with_index do |row, i|
           assert_equal(orig_fields[i], row)
         end
@@ -319,7 +317,7 @@ class TestCSV::Encodings < TestCSV
     ary.map { |row| row.map { |field| field.encode(encoding) } }
   end
 
-  def ary_to_data(ary, options = { })
+  def ary_to_data(ary, **options)
     encoding   = ary.flatten.first.encoding
     quote_char = (options[:quote_char] || '"').encode(encoding)
     col_sep    = (options[:col_sep]    || ",").encode(encoding)
@@ -331,9 +329,9 @@ class TestCSV::Encodings < TestCSV
     }.join('').encode(encoding)
   end
 
-  def encode_for_tests(data, options = { })
-    yield ary_to_data(encode_ary(data, "UTF-8"),    options)
-    yield ary_to_data(encode_ary(data, "UTF-16BE"), options)
+  def encode_for_tests(data, **options)
+    yield ary_to_data(encode_ary(data, "UTF-8"),    **options)
+    yield ary_to_data(encode_ary(data, "UTF-16BE"), **options)
   end
 
   def each_encoding

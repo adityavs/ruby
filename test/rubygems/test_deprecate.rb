@@ -45,6 +45,7 @@ class TestDeprecate < Gem::TestCase
   end
 
   class Thing
+
     extend Gem::Deprecate
     attr_accessor :message
     def foo
@@ -54,6 +55,7 @@ class TestDeprecate < Gem::TestCase
       @message = "bar"
     end
     deprecate :foo, :bar, 2099, 3
+
   end
 
   def test_deprecated_method_calls_the_old_method
@@ -74,4 +76,23 @@ class TestDeprecate < Gem::TestCase
     assert_match(/Thing#foo is deprecated; use bar instead\./, err)
     assert_match(/on or after 2099-03-01/, err)
   end
+
+  def test_deprecate_command
+    require 'rubygems/command'
+    foo_command = Class.new(Gem::Command) do
+      extend Gem::Deprecate
+
+      deprecate_command(2099, 4)
+
+      def execute
+        puts "pew pew!"
+      end
+    end
+
+    Gem::Commands.send(:const_set, :FooCommand, foo_command)
+    assert Gem::Commands::FooCommand.new("foo").deprecated?
+  ensure
+    Gem::Commands.send(:remove_const, :FooCommand)
+  end
+
 end

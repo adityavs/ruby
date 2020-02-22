@@ -12,80 +12,106 @@
 **********************************************************************/
 
 #include "ruby/config.h"
-#include "ruby/io.h"
-#include "internal.h"
-#include "ruby/thread.h"
-#include "ruby/util.h"
-#include "vm_core.h"
 
-#include <stdio.h>
+#include <ctype.h>
 #include <errno.h>
 #include <signal.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <time.h>
+
 #ifdef HAVE_STDLIB_H
-#include <stdlib.h>
-#endif
-#ifdef HAVE_UNISTD_H
-#include <unistd.h>
-#endif
-#ifdef HAVE_FCNTL_H
-#include <fcntl.h>
-#endif
-#ifdef HAVE_PROCESS_H
-#include <process.h>
+# include <stdlib.h>
 #endif
 
-#include <time.h>
-#include <ctype.h>
+#ifdef HAVE_UNISTD_H
+# include <unistd.h>
+#endif
+
+#ifdef HAVE_FCNTL_H
+# include <fcntl.h>
+#endif
+
+#ifdef HAVE_PROCESS_H
+# include <process.h>
+#endif
 
 #ifndef EXIT_SUCCESS
-#define EXIT_SUCCESS 0
+# define EXIT_SUCCESS 0
 #endif
+
 #ifndef EXIT_FAILURE
-#define EXIT_FAILURE 1
+# define EXIT_FAILURE 1
 #endif
 
 #ifdef HAVE_SYS_WAIT_H
 # include <sys/wait.h>
 #endif
+
 #ifdef HAVE_SYS_RESOURCE_H
 # include <sys/resource.h>
 #endif
+
 #ifdef HAVE_VFORK_H
 # include <vfork.h>
 #endif
+
 #ifdef HAVE_SYS_PARAM_H
 # include <sys/param.h>
 #endif
+
 #ifndef MAXPATHLEN
 # define MAXPATHLEN 1024
 #endif
-#include "ruby/st.h"
 
 #include <sys/stat.h>
 
 #ifdef HAVE_SYS_TIME_H
-#include <sys/time.h>
+# include <sys/time.h>
 #endif
+
 #ifdef HAVE_SYS_TIMES_H
-#include <sys/times.h>
+# include <sys/times.h>
 #endif
 
 #ifdef HAVE_PWD_H
-#include <pwd.h>
+# include <pwd.h>
 #endif
+
 #ifdef HAVE_GRP_H
-#include <grp.h>
+# include <grp.h>
 # ifdef __CYGWIN__
 int initgroups(const char *, rb_gid_t);
 # endif
 #endif
+
 #ifdef HAVE_SYS_ID_H
-#include <sys/id.h>
+# include <sys/id.h>
 #endif
 
 #ifdef __APPLE__
 # include <mach/mach_time.h>
 #endif
+
+#include "dln.h"
+#include "hrtime.h"
+#include "internal.h"
+#include "internal/bits.h"
+#include "internal/dir.h"
+#include "internal/error.h"
+#include "internal/eval.h"
+#include "internal/hash.h"
+#include "internal/mjit.h"
+#include "internal/object.h"
+#include "internal/process.h"
+#include "internal/thread.h"
+#include "internal/variable.h"
+#include "internal/warnings.h"
+#include "ruby/io.h"
+#include "ruby/st.h"
+#include "ruby/thread.h"
+#include "ruby/util.h"
+#include "vm_core.h"
 
 /* define system APIs */
 #ifdef _WIN32
@@ -249,7 +275,8 @@ typedef unsigned LONG_LONG unsigned_clock_t;
 typedef void (*sig_t) (int);
 #endif
 
-static ID id_in, id_out, id_err, id_pid, id_uid, id_gid, id_exception;
+#define id_exception idException
+static ID id_in, id_out, id_err, id_pid, id_uid, id_gid;
 static ID id_close, id_child;
 #ifdef HAVE_SETPGID
 static ID id_pgroup;
@@ -314,8 +341,6 @@ close_unless_reserved(int fd)
 
 /*#define DEBUG_REDIRECT*/
 #if defined(DEBUG_REDIRECT)
-
-#include <stdarg.h>
 
 static void
 ttyprintf(const char *fmt, ...)
@@ -414,8 +439,26 @@ parent_redirect_close(int fd)
 /*
  * Document-module: Process
  *
- * Module to handle processes.
+ * The module contains several groups of functionality for handling OS processes:
+ *
+ * * Low-level property introspection and management of the current process, like
+ *   Process.argv0, Process.pid;
+ * * Low-level introspection of other processes, like Process.getpgid, Process.getpriority;
+ * * Management of the current process: Process.abort, Process.exit, Process.daemon, etc.
+ *   (for convenience, most of those are also available as global functions
+ *   and module functions of Kernel);
+ * * Creation and management of child processes: Process.fork, Process.spawn, and
+ *   related methods;
+ * * Management of low-level system clock: Process.times and Process.clock_gettime,
+ *   which could be important for proper benchmarking and other elapsed
+ *   time measurement tasks.
  */
+
+static VALUE
+get_pid(void)
+{
+    return PIDT2NUM(getpid());
+}
 
 /*
  *  call-seq:
@@ -428,11 +471,16 @@ parent_redirect_close(int fd)
  */
 
 static VALUE
-get_pid(void)
+proc_get_pid(VALUE _)
 {
-    return PIDT2NUM(getpid());
+    return get_pid();
 }
 
+static VALUE
+get_ppid(void)
+{
+    return PIDT2NUM(getppid());
+}
 
 /*
  *  call-seq:
@@ -451,9 +499,9 @@ get_pid(void)
  */
 
 static VALUE
-get_ppid(void)
+proc_get_ppid(VALUE _)
 {
-    return PIDT2NUM(getppid());
+    return get_ppid();
 }
 
 
@@ -461,10 +509,10 @@ get_ppid(void)
  *
  * Document-class: Process::Status
  *
- *  <code>Process::Status</code> encapsulates the information on the
+ *  Process::Status encapsulates the information on the
  *  status of a running or terminated system process. The built-in
  *  variable <code>$?</code> is either +nil+ or a
- *  <code>Process::Status</code> object.
+ *  Process::Status object.
  *
  *     fork { exit 99 }   #=> 26557
  *     Process.wait       #=> 26557
@@ -481,7 +529,7 @@ get_ppid(void)
  *  information (for example the program's return code in the case of
  *  exited processes). Pre Ruby 1.8, these bits were exposed directly
  *  to the Ruby program. Ruby now encapsulates these in a
- *  <code>Process::Status</code> object. To maximize compatibility,
+ *  Process::Status object. To maximize compatibility,
  *  however, these objects retain a bit-oriented interface. In the
  *  descriptions that follow, when we talk about the integer value of
  *  _stat_, we're referring to this 16 bit value.
@@ -534,9 +582,8 @@ rb_last_status_clear(void)
 /*
  *  call-seq:
  *     stat.to_i     -> integer
- *     stat.to_int   -> integer
  *
- *  Returns the bits in _stat_ as a <code>Integer</code>. Poking
+ *  Returns the bits in _stat_ as a Integer. Poking
  *  around in these bits is platform dependent.
  *
  *     fork { exit 0xab }         #=> 26566
@@ -734,9 +781,9 @@ pst_rshift(VALUE st1, VALUE st2)
  *  call-seq:
  *     stat.stopped?   -> true or false
  *
- *  Returns +true+ if this process is stopped. This is only
- *  returned if the corresponding <code>wait</code> call had the
- *  <code>WUNTRACED</code> flag set.
+ *  Returns +true+ if this process is stopped. This is only returned
+ *  if the corresponding #wait call had the Process::WUNTRACED flag
+ *  set.
  */
 
 static VALUE
@@ -836,8 +883,7 @@ pst_wifexited(VALUE st)
  *     stat.exitstatus   -> integer or nil
  *
  *  Returns the least significant eight bits of the return code of
- *  _stat_. Only available if <code>exited?</code> is
- *  +true+.
+ *  _stat_. Only available if #exited? is +true+.
  *
  *     fork { }           #=> 26572
  *     Process.wait       #=> 26572
@@ -866,7 +912,7 @@ pst_wexitstatus(VALUE st)
  *     stat.success?   -> true, false or nil
  *
  *  Returns +true+ if _stat_ is successful, +false+ if not.
- *  Returns +nil+ if <code>exited?</code> is not +true+.
+ *  Returns +nil+ if #exited? is not +true+.
  */
 
 static VALUE
@@ -915,6 +961,8 @@ do_waitpid(rb_pid_t pid, int *st, int flags)
 #endif
 }
 
+#define WAITPID_LOCK_ONLY ((struct waitpid_state *)-1)
+
 struct waitpid_state {
     struct list_node wnode;
     rb_execution_context_t *ec;
@@ -930,59 +978,80 @@ void rb_native_mutex_lock(rb_nativethread_lock_t *);
 void rb_native_mutex_unlock(rb_nativethread_lock_t *);
 void rb_native_cond_signal(rb_nativethread_cond_t *);
 void rb_native_cond_wait(rb_nativethread_cond_t *, rb_nativethread_lock_t *);
-rb_nativethread_cond_t *rb_sleep_cond_get(const rb_execution_context_t *);
-void rb_sleep_cond_put(rb_nativethread_cond_t *);
+int rb_sigwait_fd_get(const rb_thread_t *);
+void rb_sigwait_sleep(const rb_thread_t *, int fd, const rb_hrtime_t *);
+void rb_sigwait_fd_put(const rb_thread_t *, int fd);
+void rb_thread_sleep_interruptible(void);
 
-static void
-waitpid_notify(struct waitpid_state *w, rb_pid_t ret)
+static int
+waitpid_signal(struct waitpid_state *w)
 {
-    w->ret = ret;
-    list_del_init(&w->wnode);
-    rb_native_cond_signal(w->cond);
+    if (w->ec) { /* rb_waitpid */
+        rb_threadptr_interrupt(rb_ec_thread_ptr(w->ec));
+        return TRUE;
+    }
+    else { /* ruby_waitpid_locked */
+        if (w->cond) {
+            rb_native_cond_signal(w->cond);
+            return TRUE;
+        }
+    }
+    return FALSE;
 }
 
-#ifdef _WIN32 /* for spawnvp result from mjit.c */
-#  define waitpid_sys(pid,status,options) \
-	  (WaitForSingleObject((HANDLE)(pid), 0),\
-	   GetExitCodeProcess((HANDLE)(pid), (LPDWORD)(status)))
-#else
-#  define waitpid_sys(pid,status,options) do_waitpid((pid),(status),(options))
-#endif
+/*
+ * When a thread is done using sigwait_fd and there are other threads
+ * sleeping on waitpid, we must kick one of the threads out of
+ * rb_native_cond_wait so it can switch to rb_sigwait_sleep
+ */
+static void
+sigwait_fd_migrate_sleeper(rb_vm_t *vm)
+{
+    struct waitpid_state *w = 0;
 
+    list_for_each(&vm->waiting_pids, w, wnode) {
+        if (waitpid_signal(w)) return;
+    }
+    list_for_each(&vm->waiting_grps, w, wnode) {
+        if (waitpid_signal(w)) return;
+    }
+}
+
+void
+rb_sigwait_fd_migrate(rb_vm_t *vm)
+{
+    rb_native_mutex_lock(&vm->waitpid_lock);
+    sigwait_fd_migrate_sleeper(vm);
+    rb_native_mutex_unlock(&vm->waitpid_lock);
+}
+
+#if RUBY_SIGCHLD
 extern volatile unsigned int ruby_nocldwait; /* signal.c */
-/* called by timer thread */
+/* called by timer thread or thread which acquired sigwait_fd */
 static void
 waitpid_each(struct list_head *head)
 {
     struct waitpid_state *w = 0, *next;
 
     list_for_each_safe(head, w, next, wnode) {
-        rb_pid_t ret;
-
-        if (w->ec)
-            ret = do_waitpid(w->pid, &w->status, w->options | WNOHANG);
-        else
-            ret = waitpid_sys(w->pid, &w->status, w->options | WNOHANG);
+        rb_pid_t ret = do_waitpid(w->pid, &w->status, w->options | WNOHANG);
 
         if (!ret) continue;
         if (ret == -1) w->errnum = errno;
 
-        if (w->ec) { /* rb_waitpid */
-            rb_thread_t *th = rb_ec_thread_ptr(w->ec);
-
-            rb_native_mutex_lock(&th->interrupt_lock);
-            waitpid_notify(w, ret);
-            rb_native_mutex_unlock(&th->interrupt_lock);
-        }
-        else { /* ruby_waitpid_locked */
-            waitpid_notify(w, ret);
-        }
+        w->ret = ret;
+        list_del_init(&w->wnode);
+        waitpid_signal(w);
     }
 }
+#else
+# define ruby_nocldwait 0
+#endif
 
 void
 ruby_waitpid_all(rb_vm_t *vm)
 {
+#if RUBY_SIGCHLD
     rb_native_mutex_lock(&vm->waitpid_lock);
     waitpid_each(&vm->waiting_pids);
     if (list_empty(&vm->waiting_pids)) {
@@ -994,6 +1063,7 @@ ruby_waitpid_all(rb_vm_t *vm)
             ; /* keep looping */
     }
     rb_native_mutex_unlock(&vm->waitpid_lock);
+#endif
 }
 
 static void
@@ -1002,6 +1072,17 @@ waitpid_state_init(struct waitpid_state *w, rb_pid_t pid, int options)
     w->ret = 0;
     w->pid = pid;
     w->options = options;
+}
+
+static const rb_hrtime_t *
+sigwait_sleep_time(void)
+{
+    if (SIGCHLD_LOSSY) {
+        static const rb_hrtime_t busy_wait = 100 * RB_HRTIME_PER_MSEC;
+
+        return &busy_wait;
+    }
+    return 0;
 }
 
 /*
@@ -1022,13 +1103,32 @@ ruby_waitpid_locked(rb_vm_t *vm, rb_pid_t pid, int *status, int options,
         if (w.ret == -1) w.errnum = errno;
     }
     else {
-        w.cond = cond;
+        int sigwait_fd = -1;
+
         w.ec = 0;
         list_add(w.pid > 0 ? &vm->waiting_pids : &vm->waiting_grps, &w.wnode);
         do {
-            rb_native_cond_wait(w.cond, &vm->waitpid_lock);
+            if (sigwait_fd < 0)
+                sigwait_fd = rb_sigwait_fd_get(0);
+
+            if (sigwait_fd >= 0) {
+                w.cond = 0;
+                rb_native_mutex_unlock(&vm->waitpid_lock);
+                rb_sigwait_sleep(0, sigwait_fd, sigwait_sleep_time());
+                rb_native_mutex_lock(&vm->waitpid_lock);
+            }
+            else {
+                w.cond = cond;
+                rb_native_cond_wait(w.cond, &vm->waitpid_lock);
+            }
         } while (!w.ret);
         list_del(&w.wnode);
+
+        /* we're done, maybe other waitpid callers are not: */
+        if (sigwait_fd >= 0) {
+            rb_sigwait_fd_put(0, sigwait_fd);
+            sigwait_fd_migrate_sleeper(vm);
+        }
     }
     if (status) {
         *status = w.status;
@@ -1037,44 +1137,13 @@ ruby_waitpid_locked(rb_vm_t *vm, rb_pid_t pid, int *status, int options,
     return w.ret;
 }
 
-static void
-waitpid_wake(void *x)
-{
-    struct waitpid_state *w = x;
-
-    /* th->interrupt_lock is already held by rb_threadptr_interrupt_common */
-    rb_native_cond_signal(w->cond);
-}
-
-static void *
-waitpid_nogvl(void *x)
-{
-    struct waitpid_state *w = x;
-    rb_thread_t *th = rb_ec_thread_ptr(w->ec);
-
-    rb_native_mutex_lock(&th->interrupt_lock);
-    /*
-     * We must check again before waiting, timer-thread may change w->ret
-     * by the time we enter this.  And we may also be interrupted.
-     */
-    if (!w->ret && !RUBY_VM_INTERRUPTED_ANY(w->ec)) {
-        if (SIGCHLD_LOSSY) {
-            rb_thread_wakeup_timer_thread();
-        }
-        rb_native_cond_wait(w->cond, &th->interrupt_lock);
-    }
-    rb_native_mutex_unlock(&th->interrupt_lock);
-
-    return 0;
-}
-
 static VALUE
 waitpid_sleep(VALUE x)
 {
     struct waitpid_state *w = (struct waitpid_state *)x;
 
     while (!w->ret) {
-        rb_thread_call_without_gvl(waitpid_nogvl, w, waitpid_wake, w);
+        rb_thread_sleep_interruptible();
     }
 
     return Qfalse;
@@ -1085,14 +1154,17 @@ waitpid_cleanup(VALUE x)
 {
     struct waitpid_state *w = (struct waitpid_state *)x;
 
-    if (w->ret == 0) {
+    /*
+     * XXX w->ret is sometimes set but list_del is still needed, here,
+     * Not sure why, so we unconditionally do list_del here:
+     */
+    if (TRUE || w->ret == 0) {
         rb_vm_t *vm = rb_ec_vm_ptr(w->ec);
 
         rb_native_mutex_lock(&vm->waitpid_lock);
         list_del(&w->wnode);
         rb_native_mutex_unlock(&vm->waitpid_lock);
     }
-    rb_sleep_cond_put(w->cond);
 
     return Qfalse;
 }
@@ -1101,6 +1173,7 @@ static void
 waitpid_wait(struct waitpid_state *w)
 {
     rb_vm_t *vm = rb_ec_vm_ptr(w->ec);
+    int need_sleep = FALSE;
 
     /*
      * Lock here to prevent do_waitpid from stealing work from the
@@ -1112,21 +1185,23 @@ waitpid_wait(struct waitpid_state *w)
     if (w->pid > 0 || list_empty(&vm->waiting_pids))
         w->ret = do_waitpid(w->pid, &w->status, w->options | WNOHANG);
     if (w->ret) {
-        w->cond = 0;
         if (w->ret == -1) w->errnum = errno;
     }
     else if (w->options & WNOHANG) {
-        w->cond = 0;
     }
     else {
-        w->cond = rb_sleep_cond_get(w->ec);
+        need_sleep = TRUE;
+    }
+
+    if (need_sleep) {
+        w->cond = 0;
         /* order matters, favor specified PIDs rather than -1 or 0 */
         list_add(w->pid > 0 ? &vm->waiting_pids : &vm->waiting_grps, &w->wnode);
     }
 
     rb_native_mutex_unlock(&vm->waitpid_lock);
 
-    if (w->cond) {
+    if (need_sleep) {
         rb_ensure(waitpid_sleep, (VALUE)w, waitpid_cleanup, (VALUE)w);
     }
 }
@@ -1188,6 +1263,31 @@ rb_waitpid(rb_pid_t pid, int *st, int flags)
     return w.ret;
 }
 
+static VALUE
+proc_wait(int argc, VALUE *argv)
+{
+    rb_pid_t pid;
+    int flags, status;
+
+    flags = 0;
+    if (rb_check_arity(argc, 0, 2) == 0) {
+        pid = -1;
+    }
+    else {
+        VALUE vflags;
+        pid = NUM2PIDT(argv[0]);
+        if (argc == 2 && !NIL_P(vflags = argv[1])) {
+            flags = NUM2UINT(vflags);
+        }
+    }
+    if ((pid = rb_waitpid(pid, &status, flags)) < 0)
+        rb_sys_fail(0);
+    if (pid == 0) {
+        rb_last_status_clear();
+        return Qnil;
+    }
+    return PIDT2NUM(pid);
+}
 
 /* [MG]:FIXME: I wasn't sure how this should be done, since ::wait()
    has historically been documented as if it didn't take any arguments
@@ -1210,7 +1310,7 @@ rb_waitpid(rb_pid_t pid, int *st, int flags)
  *     Process.waitpid(pid=-1, flags=0)   -> integer
  *
  *  Waits for a child process to exit, returns its process id, and
- *  sets <code>$?</code> to a <code>Process::Status</code> object
+ *  sets <code>$?</code> to a Process::Status object
  *  containing information on that process. Which child it waits on
  *  depends on the value of _pid_:
  *
@@ -1226,8 +1326,8 @@ rb_waitpid(rb_pid_t pid, int *st, int flags)
  *          value of _pid_.
  *
  *  The _flags_ argument may be a logical or of the flag values
- *  <code>Process::WNOHANG</code> (do not block if no child available)
- *  or <code>Process::WUNTRACED</code> (return stopped children that
+ *  Process::WNOHANG (do not block if no child available)
+ *  or Process::WUNTRACED (return stopped children that
  *  haven't been reported). Not all flags are available on all
  *  platforms, but a flag value of zero will work on all platforms.
  *
@@ -1248,29 +1348,9 @@ rb_waitpid(rb_pid_t pid, int *st, int flags)
  */
 
 static VALUE
-proc_wait(int argc, VALUE *argv)
+proc_m_wait(int c, VALUE *v, VALUE _)
 {
-    rb_pid_t pid;
-    int flags, status;
-
-    flags = 0;
-    if (rb_check_arity(argc, 0, 2) == 0) {
-	pid = -1;
-    }
-    else {
-	VALUE vflags;
-	pid = NUM2PIDT(argv[0]);
-	if (argc == 2 && !NIL_P(vflags = argv[1])) {
-	    flags = NUM2UINT(vflags);
-	}
-    }
-    if ((pid = rb_waitpid(pid, &status, flags)) < 0)
-	rb_sys_fail(0);
-    if (pid == 0) {
-	rb_last_status_clear();
-	return Qnil;
-    }
-    return PIDT2NUM(pid);
+    return proc_wait(c, v);
 }
 
 
@@ -1281,7 +1361,7 @@ proc_wait(int argc, VALUE *argv)
  *
  *  Waits for a child process to exit (see Process::waitpid for exact
  *  semantics) and returns an array containing the process id and the
- *  exit status (a <code>Process::Status</code> object) of that
+ *  exit status (a Process::Status object) of that
  *  child. Raises a SystemCallError if there are no child processes.
  *
  *     Process.fork { exit 99 }   #=> 27437
@@ -1291,7 +1371,7 @@ proc_wait(int argc, VALUE *argv)
  */
 
 static VALUE
-proc_wait2(int argc, VALUE *argv)
+proc_wait2(int argc, VALUE *argv, VALUE _)
 {
     VALUE pid = proc_wait(argc, argv);
     if (NIL_P(pid)) return Qnil;
@@ -1305,7 +1385,7 @@ proc_wait2(int argc, VALUE *argv)
  *
  *  Waits for all children, returning an array of
  *  _pid_/_status_ pairs (where _status_ is a
- *  <code>Process::Status</code> object).
+ *  Process::Status object).
  *
  *     fork { sleep 0.2; exit 2 }   #=> 27432
  *     fork { sleep 0.1; exit 1 }   #=> 27433
@@ -1320,7 +1400,7 @@ proc_wait2(int argc, VALUE *argv)
  */
 
 static VALUE
-proc_waitall(void)
+proc_waitall(VALUE _)
 {
     VALUE result;
     rb_pid_t pid;
@@ -1380,18 +1460,17 @@ rb_detach_process(rb_pid_t pid)
  *  processes until the parent collects that status (normally using
  *  some variant of <code>wait()</code>). If the parent never collects
  *  this status, the child stays around as a <em>zombie</em> process.
- *  <code>Process::detach</code> prevents this by setting up a
- *  separate Ruby thread whose sole job is to reap the status of the
- *  process _pid_ when it terminates. Use <code>detach</code>
- *  only when you do not intend to explicitly wait for the child to
- *  terminate.
+ *  Process::detach prevents this by setting up a separate Ruby thread
+ *  whose sole job is to reap the status of the process _pid_ when it
+ *  terminates. Use #detach only when you do not intend to explicitly
+ *  wait for the child to terminate.
  *
  *  The waiting thread returns the exit status of the detached process
- *  when it terminates, so you can use <code>Thread#join</code> to
+ *  when it terminates, so you can use Thread#join to
  *  know the result.  If specified _pid_ is not a valid child process
  *  ID, the thread returns +nil+ immediately.
  *
- *  The waiting thread has <code>pid</code> method which returns the pid.
+ *  The waiting thread has #pid method which returns the pid.
  *
  *  In this first example, we don't reap the first child process, so
  *  it appears as a zombie in the process status display.
@@ -1406,7 +1485,7 @@ rb_detach_process(rb_pid_t pid)
  *
  *     27389 Z
  *
- *  In the next example, <code>Process::detach</code> is used to reap
+ *  In the next example, Process::detach is used to reap
  *  the child automatically.
  *
  *     p1 = fork { sleep 0.1 }
@@ -1446,6 +1525,39 @@ before_exec_non_async_signal_safe(void)
     rb_thread_stop_timer_thread();
 }
 
+#define WRITE_CONST(fd, str) (void)(write((fd),(str),sizeof(str)-1)<0)
+#ifdef _WIN32
+int rb_w32_set_nonblock2(int fd, int nonblock);
+#endif
+
+static int
+set_blocking(int fd)
+{
+#ifdef _WIN32
+    return rb_w32_set_nonblock2(fd, 0);
+#elif defined(F_GETFL) && defined(F_SETFL)
+    int fl = fcntl(fd, F_GETFL); /* async-signal-safe */
+
+    /* EBADF ought to be possible */
+    if (fl == -1) return fl;
+    if (fl & O_NONBLOCK) {
+        fl &= ~O_NONBLOCK;
+        return fcntl(fd, F_SETFL, fl);
+    }
+    return 0;
+#endif
+}
+
+static void
+stdfd_clear_nonblock(void)
+{
+    /* many programs cannot deal with non-blocking stdin/stdout/stderr */
+    int fd;
+    for (fd = 0; fd < 3; fd++) {
+        (void)set_blocking(fd); /* can't do much about errors anyhow */
+    }
+}
+
 static void
 before_exec(void)
 {
@@ -1482,18 +1594,6 @@ after_fork_ruby(void)
     after_exec();
 }
 #endif
-
-#include "dln.h"
-
-static void
-security(const char *str)
-{
-    if (rb_env_path_tainted()) {
-	if (rb_safe_level() > 0) {
-	    rb_raise(rb_eSecurityError, "Insecure PATH - %s", str);
-	}
-    }
-}
 
 #if defined(HAVE_WORKING_FORK)
 
@@ -1670,7 +1770,6 @@ proc_spawn_cmd_internal(char **argv, char *prog)
 
     if (!prog)
 	prog = argv[0];
-    security(prog);
     prog = dln_find_exe_r(prog, 0, fbuf, sizeof(fbuf));
     if (!prog)
 	return -1;
@@ -1751,7 +1850,7 @@ check_exec_redirect_fd(VALUE v, int iskey)
         else
             goto wrong;
     }
-    else if (!NIL_P(tmp = rb_check_convert_type_with_id(v, T_FILE, "IO", idTo_io))) {
+    else if (!NIL_P(tmp = rb_io_check_io(v))) {
         rb_io_t *fptr;
         GetOpenFile(tmp, fptr);
         if (fptr->tied_io_for_writing)
@@ -1872,7 +1971,7 @@ check_exec_redirect(VALUE key, VALUE val, struct rb_execarg *eargp)
         else if (RB_TYPE_P(key, T_ARRAY)) {
 	    int i;
 	    for (i = 0; i < RARRAY_LEN(key); i++) {
-		VALUE v = RARRAY_PTR(key)[i];
+                VALUE v = RARRAY_AREF(key, i);
 		VALUE fd = check_exec_redirect_fd(v, 1);
 		if (FIX2INT(fd) != 1 && FIX2INT(fd) != 2) break;
 	    }
@@ -1930,6 +2029,7 @@ rb_execarg_addopt_rlimit(struct rb_execarg *eargp, int rtype, VALUE val)
 }
 #endif
 
+#define TO_BOOL(val, name) NIL_P(val) ? 0 : rb_bool_expected((val), name)
 int
 rb_execarg_addopt(VALUE execarg_obj, VALUE key, VALUE val)
 {
@@ -1977,7 +2077,7 @@ rb_execarg_addopt(VALUE execarg_obj, VALUE key, VALUE val)
                 rb_raise(rb_eArgError, "new_pgroup option specified twice");
             }
             eargp->new_pgroup_given = 1;
-            eargp->new_pgroup_flag = RTEST(val) ? 1 : 0;
+            eargp->new_pgroup_flag = TO_BOOL(val, "new_pgroup");
         }
         else
 #endif
@@ -1986,7 +2086,7 @@ rb_execarg_addopt(VALUE execarg_obj, VALUE key, VALUE val)
                 rb_raise(rb_eArgError, "unsetenv_others option specified twice");
             }
             eargp->unsetenv_others_given = 1;
-            eargp->unsetenv_others_do = RTEST(val) ? 1 : 0;
+            eargp->unsetenv_others_do = TO_BOOL(val, "unsetenv_others");
         }
         else if (id == id_chdir) {
             if (eargp->chdir_given) {
@@ -2010,7 +2110,7 @@ rb_execarg_addopt(VALUE execarg_obj, VALUE key, VALUE val)
                 rb_raise(rb_eArgError, "close_others option specified twice");
             }
             eargp->close_others_given = 1;
-            eargp->close_others_do = RTEST(val) ? 1 : 0;
+            eargp->close_others_do = TO_BOOL(val, "close_others");
         }
         else if (id == id_in) {
             key = INT2FIX(0);
@@ -2054,6 +2154,13 @@ rb_execarg_addopt(VALUE execarg_obj, VALUE key, VALUE val)
 		     "gid option is unimplemented on this machine");
 #endif
 	}
+        else if (id == id_exception) {
+            if (eargp->exception_given) {
+                rb_raise(rb_eArgError, "exception option specified twice");
+            }
+            eargp->exception_given = 1;
+            eargp->exception = TO_BOOL(val, "exception");
+        }
         else {
 	    return ST_STOP;
         }
@@ -2186,7 +2293,7 @@ rb_check_exec_options(VALUE opthash, VALUE execarg_obj)
 {
     if (RHASH_EMPTY_P(opthash))
         return;
-    st_foreach(rb_hash_tbl_raw(opthash), check_exec_options_i, (st_data_t)execarg_obj);
+    rb_hash_stlike_foreach(opthash, check_exec_options_i, (st_data_t)execarg_obj);
 }
 
 VALUE
@@ -2197,7 +2304,7 @@ rb_execarg_extract_options(VALUE execarg_obj, VALUE opthash)
         return Qnil;
     args[0] = execarg_obj;
     args[1] = Qnil;
-    st_foreach(rb_hash_tbl_raw(opthash), check_exec_options_i_extract, (st_data_t)args);
+    rb_hash_stlike_foreach(opthash, check_exec_options_i_extract, (st_data_t)args);
     return args[1];
 }
 
@@ -2241,7 +2348,7 @@ rb_check_exec_env(VALUE hash, VALUE *path)
 
     env[0] = hide_obj(rb_ary_new());
     env[1] = Qfalse;
-    st_foreach(rb_hash_tbl_raw(hash), check_exec_env_i, (st_data_t)env);
+    rb_hash_stlike_foreach(hash, check_exec_env_i, (st_data_t)env);
     *path = env[1];
 
     return env[0];
@@ -2252,7 +2359,6 @@ rb_check_argv(int argc, VALUE *argv)
 {
     VALUE tmp, prog;
     int i;
-    const char *name = 0;
 
     rb_check_arity(argc, 1, UNLIMITED_ARGUMENTS);
 
@@ -2267,14 +2373,12 @@ rb_check_argv(int argc, VALUE *argv)
 	SafeStringValue(prog);
 	StringValueCStr(prog);
 	prog = rb_str_new_frozen(prog);
-	name = RSTRING_PTR(prog);
     }
     for (i = 0; i < argc; i++) {
 	SafeStringValue(argv[i]);
 	argv[i] = rb_str_new_frozen(argv[i]);
 	StringValueCStr(argv[i]);
     }
-    security(name ? name : RSTRING_PTR(argv[0]));
     return prog;
 }
 
@@ -2521,16 +2625,6 @@ rb_exec_fillarg(VALUE prog, int argc, VALUE *argv, VALUE env, VALUE opthash, VAL
     RB_GC_GUARD(execarg_obj);
 }
 
-VALUE
-rb_execarg_new(int argc, const VALUE *argv, int accept_shell, int allow_exc_opt)
-{
-    VALUE execarg_obj;
-    struct rb_execarg *eargp;
-    execarg_obj = TypedData_Make_Struct(0, struct rb_execarg, &exec_arg_data_type, eargp);
-    rb_execarg_init(argc, argv, accept_shell, execarg_obj, allow_exc_opt);
-    return execarg_obj;
-}
-
 struct rb_execarg *
 rb_execarg_get(VALUE execarg_obj)
 {
@@ -2539,28 +2633,34 @@ rb_execarg_get(VALUE execarg_obj)
     return eargp;
 }
 
-VALUE
-rb_execarg_init(int argc, const VALUE *orig_argv, int accept_shell, VALUE execarg_obj, int allow_exc_opt)
+static VALUE
+rb_execarg_init(int argc, const VALUE *orig_argv, int accept_shell, VALUE execarg_obj)
 {
     struct rb_execarg *eargp = rb_execarg_get(execarg_obj);
-    VALUE prog, ret, exception = Qnil;
+    VALUE prog, ret;
     VALUE env = Qnil, opthash = Qnil;
     VALUE argv_buf;
     VALUE *argv = ALLOCV_N(VALUE, argv_buf, argc);
     MEMCPY(argv, orig_argv, VALUE, argc);
     prog = rb_exec_getargs(&argc, &argv, accept_shell, &env, &opthash);
-    if (allow_exc_opt && !NIL_P(opthash) && rb_hash_has_key(opthash, ID2SYM(id_exception))) {
-        opthash = rb_hash_dup(opthash);
-        exception = rb_hash_delete(opthash, ID2SYM(id_exception));
-    }
     rb_exec_fillarg(prog, argc, argv, env, opthash, execarg_obj);
-    if (RTEST(exception)) {
-        eargp->exception = 1;
-    }
     ALLOCV_END(argv_buf);
     ret = eargp->use_shell ? eargp->invoke.sh.shell_script : eargp->invoke.cmd.command_name;
     RB_GC_GUARD(execarg_obj);
     return ret;
+}
+
+VALUE
+rb_execarg_new(int argc, const VALUE *argv, int accept_shell, int allow_exc_opt)
+{
+    VALUE execarg_obj;
+    struct rb_execarg *eargp;
+    execarg_obj = TypedData_Make_Struct(0, struct rb_execarg, &exec_arg_data_type, eargp);
+    rb_execarg_init(argc, argv, accept_shell, execarg_obj);
+    if (!allow_exc_opt && eargp->exception_given) {
+        rb_raise(rb_eArgError, "exception option is not allowed");
+    }
+    return execarg_obj;
 }
 
 void
@@ -2610,8 +2710,8 @@ open_func(void *ptr)
 static void
 rb_execarg_allocate_dup2_tmpbuf(struct rb_execarg *eargp, long len)
 {
-    VALUE tmpbuf = rb_imemo_tmpbuf_auto_free_pointer(NULL);
-    ((rb_imemo_tmpbuf_t *)tmpbuf)->ptr = ruby_xmalloc(run_exec_dup2_tmpbuf_size(len));
+    VALUE tmpbuf = rb_imemo_tmpbuf_auto_free_pointer();
+    rb_imemo_tmpbuf_set_ptr(tmpbuf, ruby_xmalloc(run_exec_dup2_tmpbuf_size(len)));
     eargp->dup2_tmpbuf = tmpbuf;
 }
 
@@ -2637,8 +2737,6 @@ rb_execarg_parent_start1(VALUE execarg_obj)
             int fd2;
             if (NIL_P(fd2v)) {
                 struct open_struct open_data;
-                FilePathValue(vpath);
-		vpath = rb_str_encode_ospath(vpath);
               again:
                 open_data.fname = vpath;
                 open_data.oflags = flags;
@@ -2705,7 +2803,7 @@ rb_execarg_parent_start1(VALUE execarg_obj)
         }
         envp_buf = rb_str_buf_new(0);
         hide_obj(envp_buf);
-        st_foreach(RHASH_TBL_RAW(envtbl), fill_envp_buf_i, (st_data_t)envp_buf);
+        rb_hash_stlike_foreach(envtbl, fill_envp_buf_i, (st_data_t)envp_buf);
         envp_str = rb_str_buf_new(sizeof(char*) * (RHASH_SIZE(envtbl) + 1));
         hide_obj(envp_str);
         p = RSTRING_PTR(envp_buf);
@@ -2799,6 +2897,38 @@ rb_execarg_fail(VALUE execarg_obj, int err, const char *errmsg)
 }
 #endif
 
+VALUE
+rb_f_exec(int argc, const VALUE *argv)
+{
+    VALUE execarg_obj, fail_str;
+    struct rb_execarg *eargp;
+#define CHILD_ERRMSG_BUFLEN 80
+    char errmsg[CHILD_ERRMSG_BUFLEN] = { '\0' };
+    int err, state;
+
+    execarg_obj = rb_execarg_new(argc, argv, TRUE, FALSE);
+    eargp = rb_execarg_get(execarg_obj);
+    if (mjit_enabled) mjit_finish(false); // avoid leaking resources, and do not leave files. XXX: JIT-ed handle can leak after exec error is rescued.
+    before_exec(); /* stop timer thread before redirects */
+
+    rb_protect(rb_execarg_parent_start1, execarg_obj, &state);
+    if (state) {
+        execarg_parent_end(execarg_obj);
+        after_exec(); /* restart timer thread */
+        rb_jump_tag(state);
+    }
+
+    fail_str = eargp->use_shell ? eargp->invoke.sh.shell_script : eargp->invoke.cmd.command_name;
+
+    err = exec_async_signal_safe(eargp, errmsg, sizeof(errmsg));
+    after_exec(); /* restart timer thread */
+
+    rb_exec_fail(eargp, err, errmsg);
+    RB_GC_GUARD(execarg_obj);
+    rb_syserr_fail_str(err, fail_str);
+    UNREACHABLE_RETURN(Qnil);
+}
+
 /*
  *  call-seq:
  *     exec([env,] command... [,options])
@@ -2850,7 +2980,7 @@ rb_execarg_fail(VALUE execarg_obj, int err, const char *errmsg)
  *  This behavior is modified by the given +env+ and +options+ parameters. See
  *  ::spawn for details.
  *
- *  If the command fails to execute (typically <code>Errno::ENOENT</code> when
+ *  If the command fails to execute (typically Errno::ENOENT when
  *  it was not found) a SystemCallError exception is raised.
  *
  *  This method modifies process attributes according to given +options+ before
@@ -2872,29 +3002,10 @@ rb_execarg_fail(VALUE execarg_obj, int err, const char *errmsg)
  *     # never get here
  */
 
-VALUE
-rb_f_exec(int argc, const VALUE *argv)
+static VALUE
+f_exec(int c, const VALUE *a, VALUE _)
 {
-    VALUE execarg_obj, fail_str;
-    struct rb_execarg *eargp;
-#define CHILD_ERRMSG_BUFLEN 80
-    char errmsg[CHILD_ERRMSG_BUFLEN] = { '\0' };
-    int err;
-
-    execarg_obj = rb_execarg_new(argc, argv, TRUE, FALSE);
-    eargp = rb_execarg_get(execarg_obj);
-    if (mjit_enabled) mjit_pause(FALSE); /* do not leak children */
-    before_exec(); /* stop timer thread before redirects */
-    rb_execarg_parent_start(execarg_obj);
-    fail_str = eargp->use_shell ? eargp->invoke.sh.shell_script : eargp->invoke.cmd.command_name;
-
-    err = exec_async_signal_safe(eargp, errmsg, sizeof(errmsg));
-    after_exec(); /* restart timer thread */
-
-    rb_exec_fail(eargp, err, errmsg);
-    RB_GC_GUARD(execarg_obj);
-    rb_syserr_fail_str(err, fail_str);
-    UNREACHABLE_RETURN(Qnil);
+    return rb_f_exec(c, a);
 }
 
 #define ERRMSG(str) do { if (errmsg && 0 < errmsg_buflen) strlcpy(errmsg, (str), errmsg_buflen); } while (0)
@@ -3370,7 +3481,7 @@ rb_execarg_run_options(const struct rb_execarg *eargp, struct rb_execarg *sargp,
     }
 
 #ifdef HAVE_WORKING_FORK
-    if (!eargp->close_others_given || eargp->close_others_do) {
+    if (eargp->close_others_do) {
         rb_close_before_exec(3, eargp->close_others_maxhint, eargp->redirect_fds); /* async-signal-safe */
     }
 #endif
@@ -3383,10 +3494,8 @@ rb_execarg_run_options(const struct rb_execarg *eargp, struct rb_execarg *sargp,
 
     if (eargp->chdir_given) {
         if (sargp) {
-            char *cwd = ruby_getcwd();
             sargp->chdir_given = 1;
-            sargp->chdir_dir = hide_obj(rb_str_new2(cwd));
-            xfree(cwd);
+            sargp->chdir_dir = hide_obj(rb_dir_getwd_ospath());
         }
         if (chdir(RSTRING_PTR(eargp->chdir_dir)) == -1) { /* async-signal-safe */
             ERRMSG("chdir");
@@ -3416,6 +3525,11 @@ rb_execarg_run_options(const struct rb_execarg *eargp, struct rb_execarg *sargp,
         if (ary != Qfalse) {
             rb_execarg_allocate_dup2_tmpbuf(sargp, RARRAY_LEN(ary));
         }
+    }
+    {
+        int preserve = errno;
+        stdfd_clear_nonblock();
+        errno = preserve;
     }
 
     return 0;
@@ -3466,9 +3580,7 @@ rb_exec_atfork(void* arg, char *errmsg, size_t errmsg_buflen)
 {
     return rb_exec_async_signal_safe(arg, errmsg, errmsg_buflen); /* hopefully async-signal-safe */
 }
-#endif
 
-#ifdef HAVE_WORKING_FORK
 #if SIZEOF_INT == SIZEOF_LONG
 #define proc_syswait (VALUE (*)(VALUE))rb_syswait
 #else
@@ -3616,6 +3728,12 @@ static ssize_t
 read_retry(int fd, void *buf, size_t len)
 {
     ssize_t r;
+
+    if (set_blocking(fd) != 0) {
+#ifndef _WIN32
+        rb_async_bug_errno("set_blocking failed reading child error", errno);
+#endif
+    }
 
     do {
 	r = read(fd, buf, len);
@@ -3844,16 +3962,23 @@ COMPILER_WARNING_IGNORED(-Wdeprecated-declarations)
 static rb_pid_t
 retry_fork_async_signal_safe(int *status, int *ep,
         int (*chfunc)(void*, char *, size_t), void *charg,
-        char *errmsg, size_t errmsg_buflen)
+        char *errmsg, size_t errmsg_buflen,
+        struct waitpid_state *w)
 {
     rb_pid_t pid;
     volatile int try_gc = 1;
     struct child_handler_disabler_state old;
     int err;
+    rb_nativethread_lock_t *const volatile waitpid_lock_init =
+        (w && WAITPID_USE_SIGCHLD) ? &GET_VM()->waitpid_lock : 0;
 
     while (1) {
+        rb_nativethread_lock_t *waitpid_lock = waitpid_lock_init;
         prefork();
         disable_child_handler_before_fork(&old);
+        if (waitpid_lock) {
+            rb_native_mutex_lock(waitpid_lock);
+        }
 #ifdef HAVE_WORKING_VFORK
         if (!has_privilege())
             pid = vfork();
@@ -3878,6 +4003,14 @@ retry_fork_async_signal_safe(int *status, int *ep,
 #endif
         }
 	err = errno;
+        waitpid_lock = waitpid_lock_init;
+        if (waitpid_lock) {
+            if (pid > 0 && w != WAITPID_LOCK_ONLY) {
+                w->pid = pid;
+                list_add(&GET_VM()->waiting_pids, &w->wnode);
+            }
+            rb_native_mutex_unlock(waitpid_lock);
+        }
 	disable_child_handler_fork_parent(&old);
         if (0 < pid) /* fork succeed, parent process */
             return pid;
@@ -3888,34 +4021,56 @@ retry_fork_async_signal_safe(int *status, int *ep,
 }
 COMPILER_WARNING_POP
 
-rb_pid_t
-rb_fork_async_signal_safe(int *status, int (*chfunc)(void*, char *, size_t), void *charg, VALUE fds,
-        char *errmsg, size_t errmsg_buflen)
+static rb_pid_t
+fork_check_err(int *status, int (*chfunc)(void*, char *, size_t), void *charg,
+        VALUE fds, char *errmsg, size_t errmsg_buflen,
+        struct rb_execarg *eargp)
 {
     rb_pid_t pid;
     int err;
     int ep[2];
     int error_occurred;
+    struct waitpid_state *w;
+
+    w = eargp && eargp->waitpid_state ? eargp->waitpid_state : 0;
 
     if (status) *status = 0;
 
     if (pipe_nocrash(ep, fds)) return -1;
-    pid = retry_fork_async_signal_safe(status, ep, chfunc, charg, errmsg, errmsg_buflen);
+    pid = retry_fork_async_signal_safe(status, ep, chfunc, charg,
+                                       errmsg, errmsg_buflen, w);
     if (pid < 0)
         return pid;
     close(ep[1]);
     error_occurred = recv_child_error(ep[0], &err, errmsg, errmsg_buflen);
     if (error_occurred) {
         if (status) {
+            VM_ASSERT((w == 0 || w == WAITPID_LOCK_ONLY) &&
+                      "only used by extensions");
             rb_protect(proc_syswait, (VALUE)pid, status);
         }
-        else {
+        else if (!w) {
             rb_syswait(pid);
         }
         errno = err;
         return -1;
     }
     return pid;
+}
+
+/*
+ * The "async_signal_safe" name is a lie, but it is used by pty.c and
+ * maybe other exts.  fork() is not async-signal-safe due to pthread_atfork
+ * and future POSIX revisions will remove it from a list of signal-safe
+ * functions.  rb_waitpid is not async-signal-safe since MJIT, either.
+ * For our purposes, we do not need async-signal-safety, here
+ */
+rb_pid_t
+rb_fork_async_signal_safe(int *status,
+                          int (*chfunc)(void*, char *, size_t), void *charg,
+                          VALUE fds, char *errmsg, size_t errmsg_buflen)
+{
+    return fork_check_err(status, chfunc, charg, fds, errmsg, errmsg_buflen, 0);
 }
 
 COMPILER_WARNING_PUSH
@@ -3933,12 +4088,14 @@ rb_fork_ruby(int *status)
 
     while (1) {
 	prefork();
+        if (mjit_enabled) mjit_pause(false); // Don't leave locked mutex to child. Note: child_handler must be enabled to pause MJIT.
 	disable_child_handler_before_fork(&old);
 	before_fork_ruby();
 	pid = fork();
 	err = errno;
-	after_fork_ruby();
+        after_fork_ruby();
 	disable_child_handler_fork_parent(&old); /* yes, bad name */
+        if (mjit_enabled && pid > 0) mjit_resume(); /* child (pid == 0) is cared by rb_thread_atfork */
 	if (pid >= 0) /* fork succeed */
 	    return pid;
 	/* fork failed */
@@ -3958,15 +4115,14 @@ COMPILER_WARNING_POP
  *
  *  Creates a subprocess. If a block is specified, that block is run
  *  in the subprocess, and the subprocess terminates with a status of
- *  zero. Otherwise, the +fork+ call returns twice, once in
- *  the parent, returning the process ID of the child, and once in
- *  the child, returning _nil_. The child process can exit using
- *  <code>Kernel.exit!</code> to avoid running any
- *  <code>at_exit</code> functions. The parent process should
- *  use <code>Process.wait</code> to collect the termination statuses
- *  of its children or use <code>Process.detach</code> to register
- *  disinterest in their status; otherwise, the operating system
- *  may accumulate zombie processes.
+ *  zero. Otherwise, the +fork+ call returns twice, once in the
+ *  parent, returning the process ID of the child, and once in the
+ *  child, returning _nil_. The child process can exit using
+ *  Kernel.exit! to avoid running any <code>at_exit</code>
+ *  functions. The parent process should use Process.wait to collect
+ *  the termination statuses of its children or use Process.detach to
+ *  register disinterest in their status; otherwise, the operating
+ *  system may accumulate zombie processes.
  *
  *  The thread calling fork is the only thread in the created child process.
  *  fork doesn't copy other threads.
@@ -4067,6 +4223,21 @@ rb_exit(int status)
     ruby_stop(status);
 }
 
+VALUE
+rb_f_exit(int argc, const VALUE *argv)
+{
+    int istatus;
+
+    if (rb_check_arity(argc, 0, 1) == 1) {
+        istatus = exit_status_code(argv[0]);
+    }
+    else {
+        istatus = EXIT_SUCCESS;
+    }
+    rb_exit(istatus);
+
+    UNREACHABLE_RETURN(Qnil);
+}
 
 /*
  *  call-seq:
@@ -4075,7 +4246,7 @@ rb_exit(int status)
  *     Process::exit(status=true)
  *
  *  Initiates the termination of the Ruby script by raising the
- *  <code>SystemExit</code> exception. This exception may be caught. The
+ *  SystemExit exception. This exception may be caught. The
  *  optional parameter is used to return a status code to the invoking
  *  environment.
  *  +true+ and +FALSE+ of _status_ means success and failure
@@ -4095,9 +4266,9 @@ rb_exit(int status)
  *     rescued a SystemExit exception
  *     after begin block
  *
- *  Just prior to termination, Ruby executes any <code>at_exit</code> functions
- *  (see Kernel::at_exit) and runs any object finalizers (see
- *  ObjectSpace::define_finalizer).
+ *  Just prior to termination, Ruby executes any <code>at_exit</code>
+ *  functions (see Kernel::at_exit) and runs any object finalizers
+ *  (see ObjectSpace::define_finalizer).
  *
  *     at_exit { puts "at_exit function" }
  *     ObjectSpace.define_finalizer("string",  proc { puts "in finalizer" })
@@ -4109,22 +4280,11 @@ rb_exit(int status)
  *     in finalizer
  */
 
-VALUE
-rb_f_exit(int argc, const VALUE *argv)
+static VALUE
+f_exit(int c, const VALUE *a, VALUE _)
 {
-    int istatus;
-
-    if (rb_check_arity(argc, 0, 1) == 1) {
-	istatus = exit_status_code(argv[0]);
-    }
-    else {
-	istatus = EXIT_SUCCESS;
-    }
-    rb_exit(istatus);
-
-    UNREACHABLE_RETURN(Qnil);
+    return rb_f_exit(c, a);
 }
-
 
 /*
  *  call-seq:
@@ -4143,7 +4303,7 @@ rb_f_abort(int argc, const VALUE *argv)
     rb_check_arity(argc, 0, 1);
     if (argc == 0) {
 	rb_execution_context_t *ec = GET_EC();
-	VALUE errinfo = ec->errinfo;
+        VALUE errinfo = rb_ec_get_errinfo(ec);
 	if (!NIL_P(errinfo)) {
 	    rb_ec_error_print(ec, errinfo);
 	}
@@ -4160,6 +4320,12 @@ rb_f_abort(int argc, const VALUE *argv)
     }
 
     UNREACHABLE_RETURN(Qnil);
+}
+
+static VALUE
+f_abort(int c, const VALUE *a, VALUE _)
+{
+    return rb_f_abort(c, a);
 }
 
 void
@@ -4206,7 +4372,8 @@ rb_spawn_process(struct rb_execarg *eargp, char *errmsg, size_t errmsg_buflen)
 #endif
 
 #if defined HAVE_WORKING_FORK && !USE_SPAWNV
-    pid = rb_fork_async_signal_safe(NULL, rb_exec_atfork, eargp, eargp->redirect_fds, errmsg, errmsg_buflen);
+    pid = fork_check_err(0, rb_exec_atfork, eargp, eargp->redirect_fds,
+                         errmsg, errmsg_buflen, eargp);
 #else
     prog = eargp->use_shell ? eargp->invoke.sh.shell_script : eargp->invoke.cmd.command_name;
 
@@ -4233,7 +4400,9 @@ rb_spawn_process(struct rb_execarg *eargp, char *errmsg, size_t errmsg_buflen)
     rb_last_status_set((status & 0xff) << 8, 0);
     pid = 1;			/* dummy */
 # endif
-
+    if (eargp->waitpid_state && eargp->waitpid_state != WAITPID_LOCK_ONLY) {
+        eargp->waitpid_state->pid = pid;
+    }
     rb_execarg_run_options(&sarg, NULL, errmsg, errmsg_buflen);
 #endif
     return pid;
@@ -4260,6 +4429,15 @@ static rb_pid_t
 rb_execarg_spawn(VALUE execarg_obj, char *errmsg, size_t errmsg_buflen)
 {
     struct spawn_args args;
+    struct rb_execarg *eargp = rb_execarg_get(execarg_obj);
+
+    /*
+     * Prevent a race with MJIT where the compiler process where
+     * can hold an FD of ours in between vfork + execve
+     */
+    if (!eargp->waitpid_state && mjit_enabled) {
+        eargp->waitpid_state = WAITPID_LOCK_ONLY;
+    }
 
     args.execarg = execarg_obj;
     args.errmsg.ptr = errmsg;
@@ -4291,25 +4469,31 @@ rb_spawn(int argc, const VALUE *argv)
 
 /*
  *  call-seq:
- *     system([env,] command... [,options])    -> true, false or nil
+ *     system([env,] command... [,options], exception: false)    -> true, false or nil
  *
  *  Executes _command..._ in a subshell.
  *  _command..._ is one of following forms.
  *
- *    commandline                 : command line string which is passed to the standard shell
- *    cmdname, arg1, ...          : command name and one or more arguments (no shell)
- *    [cmdname, argv0], arg1, ... : command name, argv[0] and zero or more arguments (no shell)
+ *  [<code>commandline</code>]
+ *    command line string which is passed to the standard shell
+ *  [<code>cmdname, arg1, ...</code>]
+ *    command name and one or more arguments (no shell)
+ *  [<code>[cmdname, argv0], arg1, ...</code>]
+ *    command name, <code>argv[0]</code> and zero or more arguments (no shell)
  *
  *  system returns +true+ if the command gives zero exit status,
  *  +false+ for non zero exit status.
  *  Returns +nil+ if command execution fails.
  *  An error status is available in <code>$?</code>.
- *  The arguments are processed in the same way as
- *  for <code>Kernel.spawn</code>.
  *
- *  The hash arguments, env and options, are same as
- *  <code>exec</code> and <code>spawn</code>.
- *  See <code>Kernel.spawn</code> for details.
+ *  If the <code>exception: true</code> argument is passed, the method
+ *  raises an exception instead of returning +false+ or +nil+.
+ *
+ *  The arguments are processed in the same way as
+ *  for Kernel#spawn.
+ *
+ *  The hash arguments, env and options, are same as #exec and #spawn.
+ *  See Kernel#spawn for details.
  *
  *     system("echo *")
  *     system("echo", "*")
@@ -4319,37 +4503,57 @@ rb_spawn(int argc, const VALUE *argv)
  *     config.h main.rb
  *     *
  *
- *  See <code>Kernel.exec</code> for the standard shell.
+ *  Error handling:
+ *
+ *     system("cat nonexistent.txt")
+ *     # => false
+ *     system("catt nonexistent.txt")
+ *     # => nil
+ *
+ *     system("cat nonexistent.txt", exception: true)
+ *     # RuntimeError (Command failed with exit 1: cat)
+ *     system("catt nonexistent.txt", exception: true)
+ *     # Errno::ENOENT (No such file or directory - catt)
+ *
+ *  See Kernel#exec for the standard shell.
  */
 
 static VALUE
-rb_f_system(int argc, VALUE *argv)
+rb_f_system(int argc, VALUE *argv, VALUE _)
 {
-    rb_pid_t pid;
-    int status;
+    /*
+     * n.b. using alloca for now to simplify future Thread::Light code
+     * when we need to use malloc for non-native Fiber
+     */
+    struct waitpid_state *w = alloca(sizeof(struct waitpid_state));
+    rb_pid_t pid; /* may be different from waitpid_state.pid on exec failure */
     VALUE execarg_obj;
     struct rb_execarg *eargp;
+    int exec_errnum;
 
     execarg_obj = rb_execarg_new(argc, argv, TRUE, TRUE);
-    TypedData_Get_Struct(execarg_obj, struct rb_execarg, &exec_arg_data_type, eargp);
-    eargp->nocldwait_prev = ruby_nocldwait;
-    ruby_nocldwait = 0;
-    pid = rb_execarg_spawn(execarg_obj, NULL, 0);
+    eargp = rb_execarg_get(execarg_obj);
+    w->ec = GET_EC();
+    waitpid_state_init(w, 0, 0);
+    eargp->waitpid_state = w;
+    pid = rb_execarg_spawn(execarg_obj, 0, 0);
+    exec_errnum = pid < 0 ? errno : 0;
+
 #if defined(HAVE_WORKING_FORK) || defined(HAVE_SPAWNV)
-    if (pid > 0) {
-        int ret, status;
-        ret = rb_waitpid(pid, &status, 0);
-        if (ret == (rb_pid_t)-1) {
-            ruby_nocldwait = eargp->nocldwait_prev;
-            RB_GC_GUARD(execarg_obj);
-            rb_sys_fail("Another thread waited the process started by system().");
+    if (w->pid > 0) {
+        /* `pid' (not w->pid) may be < 0 here if execve failed in child */
+        if (WAITPID_USE_SIGCHLD) {
+            rb_ensure(waitpid_sleep, (VALUE)w, waitpid_cleanup, (VALUE)w);
         }
+        else {
+            waitpid_no_SIGCHLD(w);
+        }
+        rb_last_status_set(w->status, w->ret);
     }
 #endif
-    ruby_nocldwait = eargp->nocldwait_prev;
-    if (pid < 0) {
+    if (w->pid < 0 /* fork failure */ || pid < 0 /* exec failure */) {
         if (eargp->exception) {
-            int err = errno;
+            int err = exec_errnum ? exec_errnum : w->errnum;
             VALUE command = eargp->invoke.sh.shell_script;
             RB_GC_GUARD(execarg_obj);
             rb_syserr_fail_str(err, command);
@@ -4358,12 +4562,11 @@ rb_f_system(int argc, VALUE *argv)
             return Qnil;
         }
     }
-    status = PST2INT(rb_last_status_get());
-    if (status == EXIT_SUCCESS) return Qtrue;
+    if (w->status == EXIT_SUCCESS) return Qtrue;
     if (eargp->exception) {
         VALUE command = eargp->invoke.sh.shell_script;
         VALUE str = rb_str_new_cstr("Command failed with");
-        rb_str_cat_cstr(pst_message_status(str, status), ": ");
+        rb_str_cat_cstr(pst_message_status(str, w->status), ": ");
         rb_str_append(str, command);
         RB_GC_GUARD(execarg_obj);
         rb_exc_raise(rb_exc_new_str(rb_eRuntimeError, str));
@@ -4390,9 +4593,9 @@ rb_f_system(int argc, VALUE *argv)
  *  to finish.
  *
  *  The parent process should
- *  use <code>Process.wait</code> to collect
+ *  use Process.wait to collect
  *  the termination status of its child or
- *  use <code>Process.detach</code> to register
+ *  use Process.detach to register
  *  disinterest in their status;
  *  otherwise, the operating system may accumulate zombie processes.
  *
@@ -4442,17 +4645,18 @@ rb_f_system(int argc, VALUE *argv)
  *          integer : the file descriptor of specified the integer
  *          io      : the file descriptor specified as io.fileno
  *      file descriptor inheritance: close non-redirected non-standard fds (3, 4, 5, ...) or not
- *        :close_others => true  : don't inherit
+ *        :close_others => false  : inherit
  *      current directory:
  *        :chdir => str
  *
- *      The 'cmdname, arg1, ...' form does not use the shell. However,
- *      on different OSes, different things are provided as built-in
- *      commands. An example of this is 'echo', which is a built-in
- *      on Windows, but is a normal program on Linux and Mac OS X.
- *      This means that `Process.spawn 'echo', '%Path%'` will display
- *      the contents of the `%Path%` environment variable on Windows,
- *      but `Process.spawn 'echo', '$PATH'` prints the literal '$PATH'.
+ *  The <code>cmdname, arg1, ...</code> form does not use the shell.
+ *  However, on different OSes, different things are provided as
+ *  built-in commands. An example of this is +'echo'+, which is a
+ *  built-in on Windows, but is a normal program on Linux and Mac OS X.
+ *  This means that <code>Process.spawn 'echo', '%Path%'</code> will
+ *  display the contents of the <tt>%Path%</tt> environment variable
+ *  on Windows, but <code>Process.spawn 'echo', '$PATH'</code> prints
+ *  the literal <tt>$PATH</tt>.
  *
  *  If a hash is given as +env+, the environment is
  *  updated by +env+ before <code>exec(2)</code> in the child process.
@@ -4522,12 +4726,12 @@ rb_f_system(int argc, VALUE *argv)
  *    pid = spawn(command, STDERR=>:out)
  *    pid = spawn(command, STDERR=>STDOUT)
  *
- *  The hash keys specifies a file descriptor
- *  in the child process started by <code>spawn</code>.
+ *  The hash keys specifies a file descriptor in the child process
+ *  started by #spawn.
  *  :err, 2 and STDERR specifies the standard error stream (stderr).
  *
- *  The hash values specifies a file descriptor
- *  in the parent process which invokes <code>spawn</code>.
+ *  The hash values specifies a file descriptor in the parent process
+ *  which invokes #spawn.
  *  :out, 1 and STDOUT specifies the standard output stream (stdout).
  *
  *  In the above example,
@@ -4601,7 +4805,7 @@ rb_f_system(int argc, VALUE *argv)
  *    pid = spawn(command, :close_others=>true)  # close 3,4,5,... (default)
  *    pid = spawn(command, :close_others=>false) # don't close 3,4,5,...
  *
- *  :close_others is true by default for spawn and IO.popen.
+ *  :close_others is false by default for spawn and IO.popen.
  *
  *  Note that fds which close-on-exec flag is already set are closed
  *  regardless of :close_others option.
@@ -4638,11 +4842,11 @@ rb_f_system(int argc, VALUE *argv)
  *  Internally, +spawn+ uses an extra file descriptor to resolve such cyclic
  *  file descriptor mapping.
  *
- *  See <code>Kernel.exec</code> for the standard shell.
+ *  See Kernel.exec for the standard shell.
  */
 
 static VALUE
-rb_f_spawn(int argc, VALUE *argv)
+rb_f_spawn(int argc, VALUE *argv, VALUE _)
 {
     rb_pid_t pid;
     char errmsg[CHILD_ERRMSG_BUFLEN] = { '\0' };
@@ -4675,7 +4879,7 @@ rb_f_spawn(int argc, VALUE *argv)
  *  Suspends the current thread for _duration_ seconds (which may be any number,
  *  including a +Float+ with fractional seconds). Returns the actual number of
  *  seconds slept (rounded), which may be less than that asked for if another
- *  thread calls <code>Thread#run</code>. Called without an argument, sleep()
+ *  thread calls Thread#run. Called without an argument, sleep()
  *  will sleep forever.
  *
  *     Time.new    #=> 2008-03-08 19:56:19 +0900
@@ -4686,7 +4890,7 @@ rb_f_spawn(int argc, VALUE *argv)
  */
 
 static VALUE
-rb_f_sleep(int argc, VALUE *argv)
+rb_f_sleep(int argc, VALUE *argv, VALUE _)
 {
     time_t beg, end;
 
@@ -4718,7 +4922,7 @@ rb_f_sleep(int argc, VALUE *argv)
  */
 
 static VALUE
-proc_getpgrp(void)
+proc_getpgrp(VALUE _)
 {
     rb_pid_t pgrp;
 
@@ -4747,7 +4951,7 @@ proc_getpgrp(void)
  */
 
 static VALUE
-proc_setpgrp(void)
+proc_setpgrp(VALUE _)
 {
   /* check for posix setpgid() first; this matches the posix */
   /* getpgrp() above.  It appears that configure will set SETPGRP_VOID */
@@ -4829,7 +5033,7 @@ proc_setpgid(VALUE obj, VALUE pid, VALUE pgrp)
  *     Process.getsid(Process.pid())   #=> 27422
  */
 static VALUE
-proc_getsid(int argc, VALUE *argv)
+proc_getsid(int argc, VALUE *argv, VALUE _)
 {
     rb_pid_t sid;
     rb_pid_t pid = 0;
@@ -4863,7 +5067,7 @@ static rb_pid_t ruby_setsid(void);
  */
 
 static VALUE
-proc_setsid(void)
+proc_setsid(VALUE _)
 {
     rb_pid_t pid;
 
@@ -4911,9 +5115,9 @@ ruby_setsid(void)
  *
  *  Gets the scheduling priority for specified process, process group,
  *  or user. <em>kind</em> indicates the kind of entity to find: one
- *  of <code>Process::PRIO_PGRP</code>,
- *  <code>Process::PRIO_USER</code>, or
- *  <code>Process::PRIO_PROCESS</code>. _integer_ is an id
+ *  of Process::PRIO_PGRP,
+ *  Process::PRIO_USER, or
+ *  Process::PRIO_PROCESS. _integer_ is an id
  *  indicating the particular process, process group, or user (an id
  *  of 0 means _current_). Lower priorities are more favorable
  *  for scheduling. Not available on all platforms.
@@ -4945,7 +5149,7 @@ proc_getpriority(VALUE obj, VALUE which, VALUE who)
  *  call-seq:
  *     Process.setpriority(kind, integer, priority)   -> 0
  *
- *  See <code>Process#getpriority</code>.
+ *  See Process.getpriority.
  *
  *     Process.setpriority(Process::PRIO_USER, 0, 19)      #=> 0
  *     Process.setpriority(Process::PRIO_PROCESS, 0, 19)   #=> 0
@@ -5204,12 +5408,12 @@ rlimit_resource_value(VALUE rval)
  *  _resource_ indicates the kind of resource to limit.
  *  It is specified as a symbol such as <code>:CORE</code>,
  *  a string such as <code>"CORE"</code> or
- *  a constant such as <code>Process::RLIMIT_CORE</code>.
+ *  a constant such as Process::RLIMIT_CORE.
  *  See Process.setrlimit for details.
  *
- *  _cur_limit_ and _max_limit_ may be <code>Process::RLIM_INFINITY</code>,
- *  <code>Process::RLIM_SAVED_MAX</code> or
- *  <code>Process::RLIM_SAVED_CUR</code>.
+ *  _cur_limit_ and _max_limit_ may be Process::RLIM_INFINITY,
+ *  Process::RLIM_SAVED_MAX or
+ *  Process::RLIM_SAVED_CUR.
  *  See Process.setrlimit and the system getrlimit(2) manual for details.
  */
 
@@ -5242,7 +5446,7 @@ proc_getrlimit(VALUE obj, VALUE resource)
  *  _resource_ indicates the kind of resource to limit.
  *  It should be a symbol such as <code>:CORE</code>,
  *  a string such as <code>"CORE"</code> or
- *  a constant such as <code>Process::RLIMIT_CORE</code>.
+ *  a constant such as Process::RLIMIT_CORE.
  *  The available resources are OS dependent.
  *  Ruby may support following resources.
  *
@@ -5265,10 +5469,10 @@ proc_getrlimit(VALUE obj, VALUE resource)
  *
  *  _cur_limit_ and _max_limit_ may be
  *  <code>:INFINITY</code>, <code>"INFINITY"</code> or
- *  <code>Process::RLIM_INFINITY</code>,
+ *  Process::RLIM_INFINITY,
  *  which means that the resource is not limited.
- *  They may be <code>Process::RLIM_SAVED_MAX</code>,
- *  <code>Process::RLIM_SAVED_CUR</code> and
+ *  They may be Process::RLIM_SAVED_MAX,
+ *  Process::RLIM_SAVED_CUR and
  *  corresponding symbols and strings too.
  *  See system setrlimit(2) manual for details.
  *
@@ -5325,11 +5529,11 @@ check_gid_switch(void)
 /*********************************************************************
  * Document-class: Process::Sys
  *
- *  The <code>Process::Sys</code> module contains UID and GID
+ *  The Process::Sys module contains UID and GID
  *  functions which provide direct bindings to the system calls of the
  *  same names instead of the more-portable versions of the same
- *  functionality found in the <code>Process</code>,
- *  <code>Process::UID</code>, and <code>Process::GID</code> modules.
+ *  functionality found in the Process,
+ *  Process::UID, and Process::GID modules.
  */
 
 #if defined(HAVE_PWD_H)
@@ -5676,7 +5880,7 @@ proc_setuid(VALUE obj, VALUE id)
  *
  * Document-class: Process::UID
  *
- *  The <code>Process::UID</code> module contains a collection of
+ *  The Process::UID module contains a collection of
  *  module functions which can be used to portably get, set, and
  *  switch the current process's real, effective, and saved user IDs.
  *
@@ -5950,11 +6154,9 @@ static VALUE
 p_sys_setregid(VALUE obj, VALUE rid, VALUE eid)
 {
     rb_gid_t rgid, egid;
-    PREPARE_GETGRNAM;
     check_gid_switch();
     rgid = OBJ2GID(rid);
     egid = OBJ2GID(eid);
-    FINISH_GETGRNAM;
     if (setregid(rgid, egid) != 0) rb_sys_fail(0);
     return Qnil;
 }
@@ -5978,12 +6180,10 @@ static VALUE
 p_sys_setresgid(VALUE obj, VALUE rid, VALUE eid, VALUE sid)
 {
     rb_gid_t rgid, egid, sgid;
-    PREPARE_GETGRNAM;
     check_gid_switch();
     rgid = OBJ2GID(rid);
     egid = OBJ2GID(eid);
     sgid = OBJ2GID(sid);
-    FINISH_GETGRNAM;
     if (setresgid(rgid, egid, sgid) != 0) rb_sys_fail(0);
     return Qnil;
 }
@@ -6131,20 +6331,20 @@ maxgroups(void)
  *  call-seq:
  *     Process.groups   -> array
  *
- *  Get an <code>Array</code> of the gids of groups in the
+ *  Get an Array of the group IDs in the
  *  supplemental group access list for this process.
  *
  *     Process.groups   #=> [27, 6, 10, 11]
  *
  *  Note that this method is just a wrapper of getgroups(2).
  *  This means that the following characteristics of
- *  the results are completely depends on your system:
+ *  the result completely depend on your system:
  *
  *  - the result is sorted
  *  - the result includes effective GIDs
  *  - the result does not include duplicated GIDs
  *
- *  You can certainly get a sorted unique GID list of
+ *  You can make sure to get a sorted unique GID list of
  *  the current process by this expression:
  *
  *     Process.groups.uniq.sort
@@ -6187,7 +6387,7 @@ proc_getgroups(VALUE obj)
  *     Process.groups= array   -> array
  *
  *  Set the supplemental group access list to the given
- *  <code>Array</code> of group IDs.
+ *  Array of group IDs.
  *
  *     Process.groups   #=> [0, 1, 2, 3, 4, 6, 10, 11, 20, 26, 27]
  *     Process.groups = [27, 6, 10, 11]   #=> [27, 6, 10, 11]
@@ -6238,7 +6438,7 @@ proc_setgroups(VALUE obj, VALUE ary)
  *  Initializes the supplemental group access list by reading the
  *  system group database and using all groups of which the given user
  *  is a member. The group with the specified <em>gid</em> is also
- *  added to the list. Returns the resulting <code>Array</code> of the
+ *  added to the list. Returns the resulting Array of the
  *  gids of all the groups in the supplementary group access list. Not
  *  available on all platforms.
  *
@@ -6296,7 +6496,7 @@ proc_setmaxgroups(VALUE obj, VALUE val)
     int ngroups_max = get_sc_ngroups_max();
 
     if (ngroups <= 0)
-	rb_raise(rb_eArgError, "maxgroups %d shold be positive", ngroups);
+	rb_raise(rb_eArgError, "maxgroups %d should be positive", ngroups);
 
     if (ngroups > RB_MAX_GROUPS)
 	ngroups = RB_MAX_GROUPS;
@@ -6330,13 +6530,13 @@ static int rb_daemon(int nochdir, int noclose);
  */
 
 static VALUE
-proc_daemon(int argc, VALUE *argv)
+proc_daemon(int argc, VALUE *argv, VALUE _)
 {
     int n, nochdir = FALSE, noclose = FALSE;
 
     switch (rb_check_arity(argc, 0, 2)) {
-      case 2: noclose = RTEST(argv[1]);
-      case 1: nochdir = RTEST(argv[0]);
+      case 2: noclose = TO_BOOL(argv[1], "noclose");
+      case 1: nochdir = TO_BOOL(argv[0], "nochdir");
     }
 
     prefork();
@@ -6350,10 +6550,11 @@ rb_daemon(int nochdir, int noclose)
 {
     int err = 0;
 #ifdef HAVE_DAEMON
+    if (mjit_enabled) mjit_pause(false); // Don't leave locked mutex to child.
     before_fork_ruby();
     err = daemon(nochdir, noclose);
     after_fork_ruby();
-    rb_thread_atfork();
+    rb_thread_atfork(); /* calls mjit_resume() */
 #else
     int n;
 
@@ -6393,7 +6594,7 @@ rb_daemon(int nochdir, int noclose)
  *
  * Document-class: Process::GID
  *
- *  The <code>Process::GID</code> module contains a collection of
+ *  The Process::GID module contains a collection of
  *  module functions which can be used to portably get, set, and
  *  switch the current process's real, effective, and saved group IDs.
  *
@@ -6848,7 +7049,7 @@ p_gid_grant_privilege(VALUE obj, VALUE id)
  */
 
 static VALUE
-p_uid_exchangeable(void)
+p_uid_exchangeable(VALUE _)
 {
 #if defined(HAVE_SETRESUID)
     return Qtrue;
@@ -6910,7 +7111,7 @@ p_uid_exchange(VALUE obj)
  */
 
 static VALUE
-p_gid_exchangeable(void)
+p_gid_exchangeable(VALUE _)
 {
 #if defined(HAVE_SETRESGID)
     return Qtrue;
@@ -6973,7 +7174,7 @@ p_gid_exchange(VALUE obj)
  */
 
 static VALUE
-p_uid_have_saved_id(void)
+p_uid_have_saved_id(VALUE _)
 {
 #if defined(HAVE_SETRESUID) || defined(HAVE_SETEUID) || defined(_POSIX_SAVED_IDS)
     return Qtrue;
@@ -6985,8 +7186,9 @@ p_uid_have_saved_id(void)
 
 #if defined(HAVE_SETRESUID) || defined(HAVE_SETEUID) || defined(_POSIX_SAVED_IDS)
 static VALUE
-p_uid_sw_ensure(rb_uid_t id)
+p_uid_sw_ensure(VALUE i)
 {
+    rb_uid_t id = (rb_uid_t/* narrowing */)i;
     under_uid_switch = 0;
     id = rb_seteuid_core(id);
     return UIDT2NUM(id);
@@ -7087,7 +7289,7 @@ p_uid_switch(VALUE obj)
  */
 
 static VALUE
-p_gid_have_saved_id(void)
+p_gid_have_saved_id(VALUE _)
 {
 #if defined(HAVE_SETRESGID) || defined(HAVE_SETEGID) || defined(_POSIX_SAVED_IDS)
     return Qtrue;
@@ -7098,8 +7300,9 @@ p_gid_have_saved_id(void)
 
 #if defined(HAVE_SETRESGID) || defined(HAVE_SETEGID) || defined(_POSIX_SAVED_IDS)
 static VALUE
-p_gid_sw_ensure(rb_gid_t id)
+p_gid_sw_ensure(VALUE i)
 {
+    rb_gid_t id = (rb_gid_t/* narrowing */)i;
     under_gid_switch = 0;
     id = rb_setegid_core(id);
     return GIDT2NUM(id);
@@ -7207,7 +7410,7 @@ get_clk_tck(void)
  *  call-seq:
  *     Process.times   -> aProcessTms
  *
- *  Returns a <code>Tms</code> structure (see <code>Process::Tms</code>)
+ *  Returns a <code>Tms</code> structure (see Process::Tms)
  *  that contains user and system CPU times for this process,
  *  and also for children processes.
  *
@@ -7478,7 +7681,7 @@ ruby_real_ms_time(void)
  *
  *  [CLOCK_REALTIME] SUSv2 to 4, Linux 2.5.63, FreeBSD 3.0, NetBSD 2.0, OpenBSD 2.1, macOS 10.12
  *  [CLOCK_MONOTONIC] SUSv3 to 4, Linux 2.5.63, FreeBSD 3.0, NetBSD 2.0, OpenBSD 3.4, macOS 10.12
- *  [CLOCK_PROCESS_CPUTIME_ID] SUSv3 to 4, Linux 2.5.63, OpenBSD 5.4, macOS 10.12
+ *  [CLOCK_PROCESS_CPUTIME_ID] SUSv3 to 4, Linux 2.5.63, FreeBSD 9.3, OpenBSD 5.4, macOS 10.12
  *  [CLOCK_THREAD_CPUTIME_ID] SUSv3 to 4, Linux 2.5.63, FreeBSD 7.1, OpenBSD 5.4, macOS 10.12
  *  [CLOCK_VIRTUAL] FreeBSD 3.0, OpenBSD 2.1
  *  [CLOCK_PROF] FreeBSD 3.0, OpenBSD 2.1
@@ -7499,6 +7702,7 @@ ruby_real_ms_time(void)
  *  [CLOCK_UPTIME_RAW_APPROX] macOS 10.12
  *  [CLOCK_UPTIME_PRECISE] FreeBSD 8.1
  *  [CLOCK_SECOND] FreeBSD 8.1
+ *  [CLOCK_TAI] Linux 3.10
  *
  *  Note that SUS stands for Single Unix Specification.
  *  SUS contains POSIX and clock_gettime is defined in the POSIX part.
@@ -7586,8 +7790,8 @@ ruby_real_ms_time(void)
  *  So the result can be interpreted differently across systems.
  *  Time.now is recommended over CLOCK_REALTIME.
  */
-VALUE
-rb_clock_gettime(int argc, VALUE *argv)
+static VALUE
+rb_clock_gettime(int argc, VALUE *argv, VALUE _)
 {
     int ret;
 
@@ -7756,7 +7960,7 @@ rb_clock_gettime(int argc, VALUE *argv)
  *
  *  +clock_id+ can be a symbol as +Process.clock_gettime+.
  *  However the result may not be accurate.
- *  For example, +Process.clock_getres(:GETTIMEOFDAY_BASED_CLOCK_REALTIME)+
+ *  For example, <code>Process.clock_getres(:GETTIMEOFDAY_BASED_CLOCK_REALTIME)</code>
  *  returns 1.0e-06 which means 1 microsecond, but actual resolution can be more coarse.
  *
  *  If the given +clock_id+ is not supported, Errno::EINVAL is raised.
@@ -7773,18 +7977,18 @@ rb_clock_gettime(int argc, VALUE *argv)
  *  the clock ticks per second for times() function and
  *  CLOCKS_PER_SEC for clock() function.
  *
- *  +Process.clock_getres(:TIMES_BASED_CLOCK_PROCESS_CPUTIME_ID, :hertz)+
+ *  <code>Process.clock_getres(:TIMES_BASED_CLOCK_PROCESS_CPUTIME_ID, :hertz)</code>
  *  returns the clock ticks per second.
  *
- *  +Process.clock_getres(:CLOCK_BASED_CLOCK_PROCESS_CPUTIME_ID, :hertz)+
+ *  <code>Process.clock_getres(:CLOCK_BASED_CLOCK_PROCESS_CPUTIME_ID, :hertz)</code>
  *  returns CLOCKS_PER_SEC.
  *
  *    p Process.clock_getres(Process::CLOCK_MONOTONIC)
  *    #=> 1.0e-09
  *
  */
-VALUE
-rb_clock_getres(int argc, VALUE *argv)
+static VALUE
+rb_clock_getres(int argc, VALUE *argv, VALUE _)
 {
     struct timetick tt;
     timetick_int_t numerators[2];
@@ -7887,6 +8091,60 @@ rb_clock_getres(int argc, VALUE *argv)
     }
 }
 
+static VALUE
+get_CHILD_STATUS(ID _x, VALUE *_y)
+{
+    return rb_last_status_get();
+}
+
+static VALUE
+get_PROCESS_ID(ID _x, VALUE *_y)
+{
+    return get_pid();
+}
+
+/*
+ *  call-seq:
+ *     Process.kill(signal, pid, ...)    -> integer
+ *
+ *  Sends the given signal to the specified process id(s) if _pid_ is positive.
+ *  If _pid_ is zero, _signal_ is sent to all processes whose group ID is equal
+ *  to the group ID of the process. If _pid_ is negative, results are dependent
+ *  on the operating system. _signal_ may be an integer signal number or
+ *  a POSIX signal name (either with or without a +SIG+ prefix). If _signal_ is
+ *  negative (or starts with a minus sign), kills process groups instead of
+ *  processes. Not all signals are available on all platforms.
+ *  The keys and values of Signal.list are known signal names and numbers,
+ *  respectively.
+ *
+ *     pid = fork do
+ *        Signal.trap("HUP") { puts "Ouch!"; exit }
+ *        # ... do some work ...
+ *     end
+ *     # ...
+ *     Process.kill("HUP", pid)
+ *     Process.wait
+ *
+ *  <em>produces:</em>
+ *
+ *     Ouch!
+ *
+ *  If _signal_ is an integer but wrong for signal, Errno::EINVAL or
+ *  RangeError will be raised.  Otherwise unless _signal_ is a String
+ *  or a Symbol, and a known signal name, ArgumentError will be
+ *  raised.
+ *
+ *  Also, Errno::ESRCH or RangeError for invalid _pid_, Errno::EPERM
+ *  when failed because of no privilege, will be raised.  In these
+ *  cases, signals may have been sent to preceding processes.
+ */
+
+static VALUE
+proc_rb_f_kill(int c, const VALUE *v, VALUE _)
+{
+    return rb_f_kill(c, v);
+}
+
 VALUE rb_mProcess;
 static VALUE rb_mProcUID;
 static VALUE rb_mProcGID;
@@ -7894,7 +8152,7 @@ static VALUE rb_mProcID_Syscall;
 
 
 /*
- *  The <code>Process</code> module is a collection of methods used to
+ *  The Process module is a collection of methods used to
  *  manipulate processes.
  */
 
@@ -7903,16 +8161,16 @@ InitVM_process(void)
 {
 #undef rb_intern
 #define rb_intern(str) rb_intern_const(str)
-    rb_define_virtual_variable("$?", rb_last_status_get, 0);
-    rb_define_virtual_variable("$$", get_pid, 0);
-    rb_define_global_function("exec", rb_f_exec, -1);
+    rb_define_virtual_variable("$?", get_CHILD_STATUS, 0);
+    rb_define_virtual_variable("$$", get_PROCESS_ID, 0);
+    rb_define_global_function("exec", f_exec, -1);
     rb_define_global_function("fork", rb_f_fork, 0);
     rb_define_global_function("exit!", rb_f_exit_bang, -1);
     rb_define_global_function("system", rb_f_system, -1);
     rb_define_global_function("spawn", rb_f_spawn, -1);
     rb_define_global_function("sleep", rb_f_sleep, -1);
-    rb_define_global_function("exit", rb_f_exit, -1);
-    rb_define_global_function("abort", rb_f_abort, -1);
+    rb_define_global_function("exit", f_exit, -1);
+    rb_define_global_function("abort", f_abort, -1);
 
     rb_mProcess = rb_define_module("Process");
 
@@ -7931,18 +8189,18 @@ InitVM_process(void)
     rb_define_const(rb_mProcess, "WUNTRACED", INT2FIX(0));
 #endif
 
-    rb_define_singleton_method(rb_mProcess, "exec", rb_f_exec, -1);
+    rb_define_singleton_method(rb_mProcess, "exec", f_exec, -1);
     rb_define_singleton_method(rb_mProcess, "fork", rb_f_fork, 0);
     rb_define_singleton_method(rb_mProcess, "spawn", rb_f_spawn, -1);
     rb_define_singleton_method(rb_mProcess, "exit!", rb_f_exit_bang, -1);
-    rb_define_singleton_method(rb_mProcess, "exit", rb_f_exit, -1);
-    rb_define_singleton_method(rb_mProcess, "abort", rb_f_abort, -1);
+    rb_define_singleton_method(rb_mProcess, "exit", f_exit, -1);
+    rb_define_singleton_method(rb_mProcess, "abort", f_abort, -1);
     rb_define_singleton_method(rb_mProcess, "last_status", proc_s_last_status, 0);
 
-    rb_define_module_function(rb_mProcess, "kill", rb_f_kill, -1); /* in signal.c */
-    rb_define_module_function(rb_mProcess, "wait", proc_wait, -1);
+    rb_define_module_function(rb_mProcess, "kill", proc_rb_f_kill, -1);
+    rb_define_module_function(rb_mProcess, "wait", proc_m_wait, -1);
     rb_define_module_function(rb_mProcess, "wait2", proc_wait2, -1);
-    rb_define_module_function(rb_mProcess, "waitpid", proc_wait, -1);
+    rb_define_module_function(rb_mProcess, "waitpid", proc_m_wait, -1);
     rb_define_module_function(rb_mProcess, "waitpid2", proc_wait2, -1);
     rb_define_module_function(rb_mProcess, "waitall", proc_waitall, 0);
     rb_define_module_function(rb_mProcess, "detach", proc_detach, 1);
@@ -7974,8 +8232,8 @@ InitVM_process(void)
     rb_define_method(rb_cProcessStatus, "success?", pst_success_p, 0);
     rb_define_method(rb_cProcessStatus, "coredump?", pst_wcoredump, 0);
 
-    rb_define_module_function(rb_mProcess, "pid", get_pid, 0);
-    rb_define_module_function(rb_mProcess, "ppid", get_ppid, 0);
+    rb_define_module_function(rb_mProcess, "pid", proc_get_pid, 0);
+    rb_define_module_function(rb_mProcess, "ppid", proc_get_ppid, 0);
 
     rb_define_module_function(rb_mProcess, "getpgrp", proc_getpgrp, 0);
     rb_define_module_function(rb_mProcess, "setpgrp", proc_setpgrp, 0);
@@ -8255,6 +8513,10 @@ InitVM_process(void)
     /* see Process.clock_gettime */
     rb_define_const(rb_mProcess, "CLOCK_SECOND", CLOCKID2NUM(CLOCK_SECOND));
 #endif
+#ifdef CLOCK_TAI
+    /* see Process.clock_gettime */
+    rb_define_const(rb_mProcess, "CLOCK_TAI", CLOCKID2NUM(CLOCK_TAI));
+#endif
     rb_define_module_function(rb_mProcess, "clock_gettime", rb_clock_gettime, -1);
     rb_define_module_function(rb_mProcess, "clock_getres", rb_clock_getres, -1);
 
@@ -8364,7 +8626,6 @@ Init_process(void)
     id_MACH_ABSOLUTE_TIME_BASED_CLOCK_MONOTONIC = rb_intern("MACH_ABSOLUTE_TIME_BASED_CLOCK_MONOTONIC");
 #endif
     id_hertz = rb_intern("hertz");
-    id_exception = rb_intern("exception");
 
     InitVM(process);
 }

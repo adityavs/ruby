@@ -21,6 +21,7 @@ AC_ARG_VAR([cxxflags], [additional CXXFLAGS (ignored when CXXFLAGS is given)])
 
 : "environment section" && {
 HAVE_BASERUBY=yes
+BASERUBY_VERSION=
 AC_ARG_WITH(baseruby,
 	AS_HELP_STRING([--with-baseruby=RUBY], [use RUBY as baseruby; RUBY is the pathname of ruby]),
 	[AS_CASE(["$withval"],
@@ -34,6 +35,7 @@ AC_ARG_WITH(baseruby,
 AS_IF([test "$HAVE_BASERUBY" = yes -a "`RUBYOPT=- $BASERUBY -e 'print 42' 2>/dev/null`" = 42], [
     AS_IF([test "`RUBYOPT=- $BASERUBY --disable=gems -e 'print 42' 2>/dev/null`" = 42], [
 	BASERUBY="$BASERUBY --disable=gems"
+        BASERUBY_VERSION=`$BASERUBY -v`
     ])
     $BASERUBY -C "$srcdir" tool/downloader.rb -d tool -e gnu config.guess config.sub >&AS_MESSAGE_FD
 ], [
@@ -55,25 +57,20 @@ AS_IF([test x"$HAVE_GIT" = xyes], [command -v "$GIT" > /dev/null || HAVE_GIT=no]
 AC_SUBST(GIT)
 AC_SUBST(HAVE_GIT)
 
-eval `sed -n ['s/^@%:@define RUBY_API_VERSION_\([A-Z][A-Z_0-9]*\) \([0-9][0-9]*\)/API_\1=\2/p'] $srcdir/include/ruby/version.h`
-RUBY_PROGRAM_VERSION=`sed -n 's/^@%:@define RUBY_VERSION "\(.*\)"/\1/p' $srcdir/version.h`
-MAJOR=`echo $RUBY_PROGRAM_VERSION | cut -d. -f1`
-MINOR=`echo $RUBY_PROGRAM_VERSION | cut -d. -f2`
-TEENY=`echo $RUBY_PROGRAM_VERSION | cut -d. -f3`
+eval `sed -n -e ['s/^@%:@define RUBY_[A-Z_]*VERSION_\([A-Z][A-Z][A-Z_0-9]*\) \([0-9][0-9]*\)$/\1=\2/p'] \
+      -e ['s/^@%:@define \(RUBY_PATCHLEVEL\) \(.*\)/\1=\2/p'] \
+     $srcdir/include/ruby/version.h $srcdir/version.h`
 for v in MAJOR MINOR TEENY; do
     AS_IF([eval "test \"\$$v\" = ''"], [
 	AC_MSG_ERROR(could not determine $v number from version.h)
     ])
 done
-AS_IF([test "$MAJOR.$MINOR" != "$API_MAJOR.$API_MINOR"], [
-    AC_MSG_ERROR([API version $API_MAJOR.$API_MINOR differs from program version $MAJOR.$MINOR])
-])
 AC_SUBST(MAJOR)
 AC_SUBST(MINOR)
 AC_SUBST(TEENY)
-AC_SUBST(RUBY_PROGRAM_VERSION)
 AC_SUBST(RUBY_API_VERSION, '$(MAJOR).$(MINOR)')
-RUBY_PATCHLEVEL=`sed -n 's/^#define RUBY_PATCHLEVEL //p' $srcdir/version.h`
+AC_SUBST(RUBY_PROGRAM_VERSION, '$(MAJOR).$(MINOR).$(TEENY)')
+
 dnl checks for alternative programs
 AC_CANONICAL_BUILD
 RUBY_RM_RECURSIVE
@@ -130,7 +127,7 @@ AS_CASE("${os_version_style}",
 	[minor],   [os_version_style_transform=['s/\([0-9]\.[0-9][0-9]*\)\.[0-9][.0-9]*$/\1/']],
 	[major+0], [os_version_style_transform=['s/\([0-9]\)\.[0-9][.0-9]*$/\1.0/']],
 	[major],   [os_version_style_transform=['s/\([0-9]\)\.[0-9][.0-9]*$/\1/']],
-	[none],    [os_version_style_transform=['s/[0-9]\.[0-9][.0-9]*$//']],
+	[none],    [os_version_style_transform=['s/[0-9]*\.[0-9][.0-9]*$//']],
 	[AC_MSG_ERROR(unknown --with-os-version-style: $withval)])
 AS_IF([test -z "$target_alias" -a -n "$os_version_style_transform"],
 	[
@@ -160,18 +157,18 @@ test -z "$optflags" ||
     cflagspat="$cflagspat;s|"`eval echo '"'"${optflags}"'"' | sed 's/[[][|.*]]/\\&/g;s/^ */ /;s/ *$/ /'`'| |g'
 test -z "$debugflags" ||
     cflagspat="$cflagspat;s|"`eval echo '"'"${debugflags}"'"' | sed 's/[[][|.*]]/\\&/g;s/^ */ /;s/ *$/ /'`'| |g'
-test -z "warnflags" ||
+test -z "$warnflags" ||
     cflagspat="$cflagspat;s|"`eval echo '"'"${warnflags}"'"' | sed 's/[[][|.*]]/\\&/g;s/^ */ /;s/ *$/ /'`'| |g'
 AS_IF([test -z "${CFLAGS+set}"], [
     cflags=`echo " $cflags " | sed "$cflagspat;s/^ *//;s/ *$//"`
     orig_cflags="$cflags"
     cflags="$cflags "'${optflags} ${debugflags} ${warnflags}'
 ])
-AS_IF([test -z "${CXXFLAGS+set}"], [
-    cxxflags=`echo " $cxxflags " | sed "$cflagspat;s/^ *//;s/ *$//"`
-    orig_cxxflags="$cxxflags"
-    cxxflags="$cxxflags "'${optflags} ${debugflags} ${warnflags}'
-])
+dnl AS_IF([test -z "${CXXFLAGS+set}"], [
+dnl     cxxflags=`echo " $cxxflags " | sed "$cflagspat;s/^ *//;s/ *$//"`
+dnl     orig_cxxflags="$cxxflags"
+dnl     cxxflags="$cxxflags "'${optflags} ${debugflags} ${warnflags}'
+dnl ])
 
 AS_CASE(["$host_os:$build_os"],
 [darwin*:darwin*], [
@@ -186,25 +183,57 @@ AS_CASE(["$host_os:$build_os"],
 	@%:@endif
 SRC
 	AC_MSG_ERROR([clang version 3.0 or later is required])
-    ])
+    ])],
+[openbsd*:openbsd*], [
+    AC_CHECK_TOOLS(CC, [cc])
 ])
 AS_IF([test x"${build}" != x"${host}"], [
   AC_CHECK_TOOL(CC, gcc)
 ])
 
-AC_PROG_CC
+AC_PROG_CC_C99
+AS_CASE([$CC],
+[gcc-*], [
+    gcc_prefix=gcc- gcc_suffix=`echo "$CC" | sed 's/^gcc//'`
+    AC_PROG_CXX(g++${gcc_suffix})],
+[clang-*|clang], [
+    gcc_prefix=clang- gcc_suffix=`echo "$CC" | sed 's/^clang//'`
+    AC_PROG_CXX(clang++${gcc_suffix})],
+[gcc_prefix= gcc_suffix=])
 
 dnl Select the appropriate C++ compiler in OS X
-AS_CASE(["$build_os"],
-  [darwin1*.*], [
-    AS_CASE(["x$CC"],
-      [xgcc-4.2|x/usr/bin/gcc-4.2], [: ${CXX=g++-4.2}],
-      [xgcc|x/usr/bin/gcc],         [: ${CXX=g++}],
-      [xcc|x/usr/bin/cc],           [: ${CXX=c++}],
-      [xicc],                       [: ${CXX=icpc}],
-      [xclang|x/usr/bin/clang],     [: ${CXX=clang++}])
-  ])
+AS_CASE(["$build_os:${CXX}"],
+    [darwin1*.*:], [
+        AC_MSG_CHECKING([CXX for $CC])
+        AS_CASE(["/$CC "],
+            [*@<:@\ /@:>@"gcc-4.2 "*], [pat='gcc-4\.2' CXX=g++-4.2],
+            [*@<:@\ /@:>@"gcc "*],     [pat=gcc CXX=g++],
+            [*@<:@\ /@:>@"cc "*],      [pat=cc CXX=c++],
+            [*@<:@\ /@:>@"icc "*],     [pat=icc CXX=icpc],
+            [*@<:@\ /@:>@"clang "*],   [pat=clang CXX=clang++])
+        AS_IF([test "${CXX}"], [
+            CXX=`echo "/$CC " | sed ["s:\([ /]\)${pat}:\1$CXX:; s:^/::; s: *$::"]`
+        ])
+        AC_MSG_RESULT([$CXX])],
+    [openbsd*:*], [
+        AC_CHECK_TOOLS(CXX, [c++])
+    ])
 test -z "$CXX" || ac_cv_prog_CXX="$CXX"
+
+AS_CASE(["$target_os"],
+[darwin*], [
+    AC_MSG_CHECKING(if minimum required OS X version is supported)
+    AC_TRY_CPP([@%:@include <AvailabilityMacros.h>
+	@%:@if MAC_OS_X_VERSION_MIN_REQUIRED < __MAC_10_5
+	@%:@error pre OS X 10.5
+	[!<===== pre OS X 10.5 =====>]
+	@%:@endif
+	],
+	[macosx_min_required=yes],
+	[AC_MSG_RESULT(no)
+	AC_MSG_ERROR([Unsupported OS X version is required])])
+    AC_MSG_RESULT(${macosx_min_required})
+])
 
 AC_PROG_CXX
 RUBY_MINGW32
@@ -221,13 +250,15 @@ AS_IF([test "$GCC" = yes], [
     gcc_minor=`echo =__GNUC_MINOR__ | $CC -E -xc - | sed '/^=/!d;s///'`
     test -n "$gcc_major" || gcc_major=0
     test -n "$gcc_minor" || gcc_minor=0
-    AS_CASE(["x$CC"], [xicc], [
-      icc_version=`echo =__ICC | $CC -E -xc - | sed '/^=/!d;s///'`
-    ])
+    icc_version=`echo =__ICC | $CC -E -xc - | sed '/^=/!d;s///;/^__ICC/d'`
     test -n "$icc_version" || icc_version=0
     # RUBY_APPEND_OPTIONS(XCFLAGS, ["-include ruby/config.h" "-include ruby/missing.h"])
 ], [
     linker_flag=
+])
+
+AS_IF([test "$GCC" = yes -a "$gcc_major" -lt 3 ], [
+    AC_MSG_ERROR([too old GCC])
 ])
 
 RUBY_PROG_GNU_LD
@@ -239,6 +270,35 @@ RUBY_CPPOUTFILE
 AC_SUBST(OUTFLAG)
 AC_SUBST(COUTFLAG)
 AC_SUBST(CSRCFLAG)
+
+: ${MJIT_CC=$CC}
+AS_IF([test "x$cross_compiling" = xno], [
+    AC_PATH_PROG([MJIT_CC], ${MJIT_CC})
+
+    # if $CC is in /usr/lib/ccache/$CC, search original $CC (disable ccache)
+    AS_IF([echo $RUBY_DEBUG | grep ci > /dev/null &&
+           echo $MJIT_CC | grep ^/usr/lib/ccache > /dev/null], [
+           PATH=`echo $PATH | sed "s/\/usr\/lib\/ccache://"` MJIT_CC=`which $CC`])
+
+    AS_CASE([$target_os],
+	[*mingw*], [command -v cygpath > /dev/null && MJIT_CC=`cygpath -ma $MJIT_CC`])
+    shift 2
+    MJIT_CC="$MJIT_CC${1+ }$*"
+])
+
+AS_CASE(["$build_os"],
+  [darwin1*.*], [
+    # Xcode linker warns for deprecated architecture and wrongly
+    # installed TBD files.
+    CC_WRAPPER=""
+    echo 'int main(void) {return 0;}' > conftest.c
+    AS_IF([$CC -framework Foundation -o conftest conftest.c 2>&1 |
+	   grep '^ld: warning: text-based stub file' >/dev/null], [
+	CC_WRAPPER=`cd -P "$srcdir/tool" && pwd`/darwin-cc
+	CC="$CC_WRAPPER $CC"
+    ])
+    rm -fr conftest*
+  ])
 
 cc_version=
 for option in --version -v -V -qversion; do
@@ -266,8 +326,8 @@ if libtool 2>&1 | grep no_warning_for_no_symbols > /dev/null; then
   rb_cv_arflags='-no_warning_for_no_symbols -o'
 fi
 ])
-AC_CHECK_TOOL(RANLIB, ranlib, :)
-AC_CHECK_TOOL(AR, ar)
+AC_CHECK_TOOLS(RANLIB, [${gcc_prefix}ranlib${gcc_suffix} ranlib], :)
+AC_CHECK_TOOLS(AR, [${gcc_prefix}ar${gcc_suffix} ar])
 AS_IF([test -z "$AR"], [
   AC_CHECK_PROGS(AR, aal, ar)
 ])
@@ -316,7 +376,7 @@ AS_CASE(["$target_os"],
     ],
 [aix*],     [AC_CHECK_TOOL(NM, nm, /usr/ccs/bin/nm, /usr/ccs/bin:$PATH)],
 [hiuxmpp*], [AC_DEFINE(__HIUX_MPP__)])    # by TOYODA Eizi <toyoda@npd.kishou.go.jp>
-AC_CHECK_TOOL(NM, nm)
+AC_CHECK_TOOLS(NM, [${gcc_prefix}nm${gcc_suffix} nm])
 
 AC_PROG_LN_S
 AC_PROG_MAKE_SET
@@ -389,6 +449,7 @@ RUBY_WERROR_FLAG([
 	AC_MSG_ERROR([something wrong with CFLAGS="$CFLAGS"])
 	]
     )
+
     AC_MSG_CHECKING([whether LDFLAGS is valid])
     {
 	mkdir tmp.$$.try_link &&
@@ -426,6 +487,8 @@ AS_IF([test x"${RPATHFLAG}" = x], [
     rpathflag=`echo "$RPATHFLAG" | sed 's/%.*//'`
 ])
 
+RUBY_TRY_CFLAGS(-fdeclspec, [RUBY_APPEND_OPTIONS(XCFLAGS, -fdeclspec)])
+
 AS_CASE([$RUBY_PATCHLEVEL], [-*],
 	[RUBY_DEVEL=yes], [RUBY_DEVEL=no])
 particular_werror_flags=$RUBY_DEVEL
@@ -437,46 +500,46 @@ AC_ARG_ENABLE(werror,
 	[particular_werror_flags=$enableval])
 
 rb_cv_warnflags="$warnflags"
-AS_IF([test "$GCC:${warnflags+set}:no" = yes::no], [
+AS_CASE(["$GCC:${warnflags+set}:${extra_warnflags:+set}:"],
+[yes::*|yes:*:set:], [# GCC && (!warnflags || extra_warnflags)
     AS_IF([test $gcc_major -ge 4], [
-	extra_warning=-Werror=extra-tokens
-    ], [
-	extra_warning=
+	extra_warnflags="$extra_warnflags -Werror=extra-tokens"
     ])
     AS_IF([test $gcc_major -ge 5 -a $gcc_major -le 6], [
-	extra_warning="$extra_warning -Wno-maybe-uninitialized"
+	extra_warnflags="$extra_warnflags -Wno-maybe-uninitialized"
     ])
     # ICC doesn't support -Werror=
     AS_IF([test $icc_version -gt 0], [
 	particular_werror_flags=no
     ])
-    for wflag in -Wno-unused-parameter -Wno-parentheses -Wno-long-long \
-                 -diag-disable=175,188,2259 \
-		 -Wno-missing-field-initializers \
-		 -Wno-tautological-compare \
-		 -Wno-parentheses-equality \
-		 -Wno-constant-logical-operand \
-		 -Wno-self-assign \
-		 -Wno-cast-function-type \
-		 -Wunused-variable \
-		 -Werror=implicit-int \
-		 -Werror=pointer-arith \
-		 -Werror=write-strings \
-		 -Werror=declaration-after-statement \
-		 -Werror=shorten-64-to-32 \
-		 -Werror=implicit-function-declaration \
-		 -Werror=division-by-zero \
+    for wflag in \
 		 -Werror=deprecated-declarations \
+		 -Werror=division-by-zero \
+		 -Werror=duplicated-cond \
+		 -Werror=implicit-function-declaration \
+		 -Werror=implicit-int \
 		 -Werror=misleading-indentation \
+		 -Werror=pointer-arith \
+		 -Werror=shorten-64-to-32 \
+		 -Werror=write-strings \
+		 -Wimplicit-fallthrough=0 \
+		 -Wmissing-noreturn \
+		 -Wno-cast-function-type \
+		 -Wno-constant-logical-operand \
+		 -Wno-long-long \
+		 -Wno-missing-field-initializers \
 		 -Wno-overlength-strings \
 		 -Wno-packed-bitfield-compat \
-		 -Wsuggest-attribute=noreturn \
+		 -Wno-parentheses-equality \
+		 -Wno-self-assign \
+		 -Wno-tautological-compare \
+		 -Wno-unused-parameter \
+		 -Wno-unused-value \
 		 -Wsuggest-attribute=format \
-		 -Wmissing-noreturn \
-		 -Wimplicit-fallthrough=0 \
-		 -Werror=duplicated-cond \
-		 -Werror=restrict \
-		 $extra_warning \
+		 -Wsuggest-attribute=noreturn \
+		 -Wunused-variable \
+		 -diag-disable=175,188,2259 \
+		 $extra_warnflags \
 		 ; do
 	AS_IF([test "$particular_werror_flags" != yes], [
 	    wflag=`echo x$wflag | sed 's/^x-Werror=/-W/;s/^x//'`
@@ -514,7 +577,19 @@ AS_IF([test "$GCC" = yes], [
     # argument check. The performance drop is very little and Ubuntu enables
     # _FORTIFY_SOURCE=2 by default. So, let's support it for protecting us from
     # a mistake of silly C extensions.
+
+    # TODO: check if link succeeds with _FORTIFY_SOURCE=2.
+    AS_CASE(["$target_os"],
+    [mingw*], [
+	fortify_source=no
+    ])
+    AC_ARG_ENABLE(fortify_source,
+		  AS_HELP_STRING([--disable-fortify-source],
+				 [disable -D_FORTIFY_SOURCE=2 option, which causes link error on mingw]),
+		  [fortify_source=$enableval])
+    AS_IF([test "x$fortify_source" != xno], [
     RUBY_TRY_CFLAGS(-D_FORTIFY_SOURCE=2, [RUBY_APPEND_OPTION(XCFLAGS, -D_FORTIFY_SOURCE=2)])
+    ])
 
     : ${MJIT_HEADER_FLAGS='-P -dD'}
 
@@ -524,15 +599,18 @@ AS_IF([test "$GCC" = yes], [
 	stack_protector=no
     ])
     AS_IF([test -z "${stack_protector+set}"], [
-	RUBY_TRY_CFLAGS(-fstack-protector, [stack_protector=yes], [stack_protector=no])
-	AS_IF([test "x$stack_protector" = xyes], [
-	    RUBY_TRY_LDFLAGS(-fstack-protector, [], [stack_protector=broken])
+	AS_FOR(option, opt, [-fstack-protector-strong -fstack-protector], [
+	    RUBY_TRY_CFLAGS(option, [stack_protector=yes])
+	    AS_IF([test "x$stack_protector" = xyes], [
+		RUBY_TRY_LDFLAGS(option, [], [stack_protector=])
+	    ])
+	    AS_IF([test "x$stack_protector" = xyes], [stack_protector=option; break])
 	])
     ])
-    AS_IF([test "x$stack_protector" = xyes], [
-	RUBY_APPEND_OPTION(XCFLAGS, -fstack-protector)
-	RUBY_APPEND_OPTION(XLDFLAGS, -fstack-protector)
-	RUBY_APPEND_OPTION(LDFLAGS, -fstack-protector)
+    AS_CASE(["$stack_protector"], [-*], [
+	RUBY_APPEND_OPTION(XCFLAGS, $stack_protector)
+	RUBY_APPEND_OPTION(XLDFLAGS, $stack_protector)
+	RUBY_APPEND_OPTION(LDFLAGS, $stack_protector)
     ])
 
     AS_CASE("${compress_debug_sections:-zlib}",
@@ -581,10 +659,12 @@ AS_IF([test "$GCC" = yes], [
     ],
     [cygwin*|darwin*|netbsd*], [
       # need lgamma_r(), finite()
-    ],
+    ])
+
+    # ANSI (no XCFLAGS because this is C only)
+    AS_CASE(["$target_os"],
     [solaris*], [
-      # ANSI (no XCFLAGS because this is C only)
-      # Because "-std=gnu99" affects existance of functions on Solaris,
+      # Because "-std=gnu99" affects existence of functions on Solaris,
       # "-std=gnu99" will be appended to CPPFLAGS.
 	for ansi_options in -std=gnu99; do
 	    RUBY_TRY_CFLAGS(${ansi_options}, [
@@ -595,6 +675,9 @@ AS_IF([test "$GCC" = yes], [
     ],
     [
       # ANSI (no XCFLAGS because this is C only)
+      rb_tmp_std_check=`echo $CC $CFLAGS $optflags $warnflags $debugflags | fgrep std= | tr -d  '\015'`
+      AS_IF([test "x$rb_tmp_std_check" = "x"],
+      [
 	for ansi_options in -std=gnu99; do
 	    RUBY_TRY_CFLAGS(${ansi_options}, [
 		RUBY_APPEND_OPTIONS(warnflags, ${ansi_options})
@@ -602,6 +685,7 @@ AS_IF([test "$GCC" = yes], [
 	    ], [ansi_options=])
 	    test "x${ansi_options}" = x || break
 	done
+      ])
     ])
 
     # suppress annoying -Wstrict-overflow warnings
@@ -685,6 +769,15 @@ test -z "${ac_env_CFLAGS_set}" -a -n "${cflags+set}" && eval CFLAGS="\"$cflags $
 test -z "${ac_env_CXXFLAGS_set}" -a -n "${cxxflags+set}" && eval CXXFLAGS="\"$cxxflags $ARCH_FLAG\""
 }
 
+AC_CACHE_CHECK([whether compiler has statement and declarations in expressions],
+  rb_cv_have_stmt_and_decl_in_expr,
+  [AC_TRY_COMPILE([],[ __extension__ ({ int a = 0; a; }); ],
+  [rb_cv_have_stmt_and_decl_in_expr=yes],
+  [rb_cv_have_stmt_and_decl_in_expr=no])])
+AS_IF([test "$rb_cv_have_stmt_and_decl_in_expr" = yes], [
+  AC_DEFINE(HAVE_STMT_AND_DECL_IN_EXPR)
+])
+
 : "header and library section" && {
 AC_ARG_WITH(winnt-ver,
   AS_HELP_STRING([--with-winnt-ver=0xXXXX], [target Windows NT version (default to 0x0600)]),
@@ -730,28 +823,20 @@ AS_CASE(["$target_os"],
 		ORIG_LIBS="$LIBS"
 		RUBY_PREPEND_OPTION(LIBS, -lobjc)
 		RUBY_APPEND_OPTIONS(CPPFLAGS, -D_XOPEN_SOURCE -D_DARWIN_C_SOURCE -D_DARWIN_UNLIMITED_SELECT -D_REENTRANT)
-		AC_MSG_CHECKING(whether Mac OS X 10.5 or later)
-		AC_TRY_CPP([#include <AvailabilityMacros.h>
-		    #if MAC_OS_X_VERSION_MAX_ALLOWED <= 1040
-		    #error pre OS X 10.4
-		    [!<===== pre OS X 10.4 =====>]
-		    #endif
-		    ],
-		    [macosx_10_5=yes], [macosx_10_5=no])
-		AC_MSG_RESULT($macosx_10_5)
-		AS_IF([test "${target_os@%:@darwin}" -ge 16], [
+		AC_CACHE_CHECK([whether syscall(2) is deprecated], rb_cv_syscall_deprecated,
+		    [RUBY_WERROR_FLAG([
+			AC_TRY_COMPILE([@%:@include <unistd.h>],
+				       [if (syscall(0)) return 1;],
+			    [rb_cv_syscall_deprecated=no],
+			    [rb_cv_syscall_deprecated=yes])])])
+		AS_IF([test $rb_cv_syscall_deprecated = yes], [
 		    ac_cv_func___syscall=no
 		    ac_cv_func_syscall=no
 		    ac_cv_header_sys_syscall_h=no
 		    ac_cv_header_syscall_h=no
 		])
-		AS_IF([test $macosx_10_5 = yes], [
-		    ac_cv_func_getcontext=no
-		    ac_cv_func_setcontext=no
-		], [
-		    AC_DEFINE(BROKEN_SETREUID, 1)
-		    AC_DEFINE(BROKEN_SETREGID, 1)
-		])
+		ac_cv_func_getcontext=no
+		ac_cv_func_setcontext=no
 		incs=`$CC -v -E -xc - < /dev/null 2>&1 | sed ['1,/^@%:@include </d;s/^ *//;s|[^./][^/]*/\.\./||g;/\/include$/!d;s||/lib|;/\/usr\/lib/d']`
 		for d in `$CC -print-search-dirs | sed -e '/^libraries: */!d;s///' | tr : '\012' | fgrep -v /../ | sed -n 's|^\(/.*/lib\)/$|\1|p'`; do
 		    incs=`echo "$incs" | fgrep -v "$d"`
@@ -892,9 +977,6 @@ main()
 		ac_cv_func_fsync=yes
 		ac_cv_func_seekdir=yes
 		ac_cv_func_telldir=yes
-		ac_cv_func_isinf=yes
-		ac_cv_func_isnan=yes
-		ac_cv_func_finite=yes
 		ac_cv_func_lchown=yes
 		ac_cv_func_link=yes
 		ac_cv_func_readlink=yes
@@ -913,9 +995,12 @@ main()
                 ac_cv_func_clock_gettime=yes
                 ac_cv_func_clock_getres=yes
 		ac_cv_func_malloc_usable_size=no
+		ac_cv_type_off_t=yes
+		ac_cv_sizeof_off_t=8
 		AS_IF([test "$target_cpu" = x64], [
-		    ac_cv_func___builtin_setjmp=no
+		    ac_cv_func___builtin_setjmp=yes
 		    ac_cv_func_round=no
+		    rb_cv_coroutine=yes
 		])
 		ac_cv_func_tgamma=no
 		rb_cv_negative_time_t=yes
@@ -942,12 +1027,23 @@ main()
 [netbsd*], [	LIBS="-lm $LIBS"
 		],
 [dragonfly*], [	LIBS="-lm $LIBS"
-		# isinf() and isnan() are macros on DragonFly.
-		ac_cv_func_isinf=yes
-		ac_cv_func_isnan=yes
 		],
 [aix*],[	LIBS="-lm $LIBS"
 		ac_cv_func_round=no
+		ac_cv_func___builtin_setjmp=no
+		],
+[linux*],[	LIBS="-lm $LIBS"
+		# __builtin_longjmp in ppc64* Linux does not restore
+		# the TOC register (r2), which is problematic
+		# when a global exit happens from JITted .so code.
+		AS_CASE(["$target_cpu"], [powerpc64*], [
+			ac_cv_func___builtin_setjmp=no
+		])
+		# With gcc-8's -fcf-protection, MJIT's __builtin_longjmp fails.
+		AS_CASE(["$CC $CFLAGS "], [*" -fcf-protection "*], [cf_protection=yes], [cf_protection=no])
+		AS_IF([test "$cf_protection" = yes], [
+			ac_cv_func___builtin_setjmp=no
+		])
 		],
 [	LIBS="-lm $LIBS"])
 : ${ORIG_LIBS=$LIBS}
@@ -965,6 +1061,7 @@ AC_HEADER_SYS_WAIT
 
 AC_CHECK_HEADERS(a.out.h)
 AC_CHECK_HEADERS(atomic.h)
+AC_CHECK_HEADERS(copyfile.h)
 AC_CHECK_HEADERS(direct.h)
 AC_CHECK_HEADERS(grp.h)
 AC_CHECK_HEADERS(fcntl.h)
@@ -980,9 +1077,12 @@ AC_CHECK_HEADERS(malloc_np.h)
 AC_CHECK_HEADERS(net/socket.h)
 AC_CHECK_HEADERS(process.h)
 AC_CHECK_HEADERS(pwd.h)
+AC_CHECK_HEADERS(sanitizer/asan_interface.h)
+AC_CHECK_HEADERS(sanitizer/msan_interface.h)
 AC_CHECK_HEADERS(setjmpex.h)
 AC_CHECK_HEADERS(stdalign.h)
 AC_CHECK_HEADERS(sys/attr.h)
+AC_CHECK_HEADERS(sys/eventfd.h)
 AC_CHECK_HEADERS(sys/fcntl.h)
 AC_CHECK_HEADERS(sys/file.h)
 AC_CHECK_HEADERS(sys/id.h)
@@ -1004,6 +1104,7 @@ AC_CHECK_HEADERS(syscall.h)
 AC_CHECK_HEADERS(time.h)
 AC_CHECK_HEADERS(ucontext.h)
 AC_CHECK_HEADERS(utime.h)
+AC_CHECK_HEADERS(x86intrin.h)
 
 AC_ARG_WITH([gmp],
   [AS_HELP_STRING([--without-gmp],
@@ -1028,7 +1129,8 @@ AS_IF([test "x$with_jemalloc" != xno],[
     [test x$with_jemalloc = xyes && with_jemalloc=no])
   AC_CHECK_HEADER(jemalloc/jemalloc.h, [
     AC_DEFINE(RUBY_ALTERNATIVE_MALLOC_HEADER, [<jemalloc/jemalloc.h>])
-  ])
+  ],
+  [test x$with_jemalloc = xyes && with_jemalloc=no])
   AS_IF([test "x$with_jemalloc" != xyes], [
     AC_CACHE_CHECK([for jemalloc with JEMALLOC_MANGLE], rb_cv_jemalloc_demangle,
       [AC_LINK_IFELSE([AC_LANG_PROGRAM([@%:@define JEMALLOC_MANGLE 1
@@ -1083,7 +1185,6 @@ mv confdefs1.h confdefs.h
 cat largefile.h >> confdefs.h
 
 AS_CASE(["$target_os"],
-    [mingw*], [ac_cv_type_off_t=yes;ac_cv_sizeof_off_t=8],
     [aix*], [
     AS_CASE(["$target_cpu:$ac_cv_sys_large_files"],
 	[ppc64:*|powerpc64:*], [],
@@ -1101,6 +1202,7 @@ AC_C_CHAR_UNSIGNED
 AC_C_INLINE
 AC_C_VOLATILE
 AC_C_TYPEOF
+AC_C_RESTRICT
 
 AS_CASE(":$ac_cv_c_const:$ac_cv_c_volatile:",
     [*:no:*], [AC_MSG_ERROR(ANSI C-conforming const and volatile are mandatory)])
@@ -1257,10 +1359,11 @@ AS_IF([test "$rb_cv_va_args_macro" = yes], [
 
 AC_CACHE_CHECK([for alignas() syntax], rb_cv_have_alignas, [
 rb_cv_have_alignas=no
+# Prefer alignas over _Alignas to allow C++ compiler to read ruby.h
 RUBY_WERROR_FLAG([
 for attr in \
-    "_Alignas(x)" \
     "alignas(x)" \
+    "_Alignas(x)" \
     "@<:@@<:@alignas(x)@:>@@:>@" \
     "__declspec(aligned(x))" \
     "__attribute__((__aligned__(x)))" \
@@ -1269,8 +1372,11 @@ do
     # C11 _Alignas and GCC __attribute__((__aligned__)) behave
     # slightly differently.  What we want is GCC's.  Check that
     # here by something C11 does not allow (`struct ALIGNAS ...`)
-    AC_TRY_COMPILE(
-	[@%:@define ALIGNAS(x) $attr
+    AC_TRY_COMPILE([
+       @%:@ifdef HAVE_STDALIGN_H
+        @%:@include <stdalign.h>
+        @%:@endif
+        @%:@define ALIGNAS(x) $attr
 	struct ALIGNAS(128) conftest_tag { int foo; } foo; ], [],
         [rb_cv_have_alignas="$attr"; break], [])
 done
@@ -1281,6 +1387,7 @@ AS_IF([test "$rb_cv_have_alignas" != no], [
 
 AC_CACHE_CHECK([for alignof() syntax], rb_cv_have_alignof,[
 rb_cv_have_alignof=no
+# Prefer alignof over _Alignof to allow C++ compiler to read ruby.h
 RUBY_WERROR_FLAG([
 for expr in \
     "alignof" \
@@ -1308,6 +1415,9 @@ RUBY_FUNC_ATTRIBUTE(__deprecated__("by "@%:@n), DEPRECATED_BY(n,x), rb_cv_func_d
 RUBY_TYPE_ATTRIBUTE(__deprecated__ mesg, DEPRECATED_TYPE(mesg,x), rb_cv_type_deprecated)
 RUBY_FUNC_ATTRIBUTE(__noinline__, NOINLINE)
 RUBY_FUNC_ATTRIBUTE(__always_inline__, ALWAYS_INLINE)
+RUBY_FUNC_ATTRIBUTE(__no_sanitize__(san), NO_SANITIZE(san, x), rb_cv_func_no_sanitize)
+RUBY_FUNC_ATTRIBUTE(__no_sanitize_address__, NO_SANITIZE_ADDRESS)
+RUBY_FUNC_ATTRIBUTE(__no_address_safety_analysis__, NO_ADDRESS_SAFETY_ANALYSIS)
 RUBY_FUNC_ATTRIBUTE(__warn_unused_result__, WARN_UNUSED_RESULT)
 RUBY_FUNC_ATTRIBUTE(__unused__, MAYBE_UNUSED)
 RUBY_FUNC_ATTRIBUTE(__error__ mesg, ERRORFUNC(mesg,x), rb_cv_func___error__)
@@ -1316,6 +1426,32 @@ RUBY_FUNC_ATTRIBUTE(__weak__, WEAK, rb_cv_func_weak)
 AS_IF([test "$rb_cv_func_weak" != x], [
    AC_DEFINE(HAVE_FUNC_WEAK)
 ])
+
+AC_CACHE_CHECK([for __attribute__((__depreacted__(msg))) in C++],
+  rb_cv_CentOS6_CXX_workaround,
+  RUBY_WERROR_FLAG([
+    AC_LANG_PUSH([C++])
+    AC_COMPILE_IFELSE(
+      [AC_LANG_PROGRAM(
+        [],
+        [__attribute__((__deprecated__("message"))) int conftest(...);])],
+      [rb_cv_CentOS6_CXX_workaround=yes],
+      [rb_cv_CentOS6_CXX_workaround=no])
+    AC_LANG_POP()]))
+AS_IF([test "$rb_cv_CentOS6_CXX_workaround" != no],[
+  AC_DEFINE([RUBY_CXX_DEPRECATED(msg)],
+    [__attribute__((__deprecated__(msg)))])])
+
+AC_CACHE_CHECK([for std::nullptr_t], rb_cv_CXX_nullptr, [
+  AC_LANG_PUSH([C++])
+  AC_COMPILE_IFELSE(
+    [AC_LANG_PROGRAM(
+      [@%:@include <cstddef>],
+      [static std::nullptr_t const *const conftest = nullptr;])],
+    [rb_cv_CXX_nullptr=yes],
+    [rb_cv_CXX_nullptr=no])
+  AC_LANG_POP()])
+AS_IF([test "$rb_cv_CXX_nullptr" != no],[AC_DEFINE(HAVE_NULLPTR)])
 
 if_i386=${universal_binary+[defined __i386__]}
 RUBY_FUNC_ATTRIBUTE(__stdcall__,  FUNC_STDCALL,  rb_cv_func_stdcall,  ${if_i386})
@@ -1396,6 +1532,11 @@ done
 AS_IF([test "$rb_cv_func_exported" != no], [
     AC_DEFINE_UNQUOTED(RUBY_FUNC_EXPORTED, [$rb_cv_func_exported extern])
 ])
+RUBY_DECL_ATTRIBUTE([__nonnull__(n)], [RUBY_FUNC_NONNULL(n,x)], [rb_cv_func_nonnull],
+                    [], [function], [
+@%:@define x int conftest_attribute_check(void *p)
+@%:@define n 1
+])
 
 RUBY_APPEND_OPTION(XCFLAGS, -DRUBY_EXPORT)
 
@@ -1407,15 +1548,18 @@ AC_SUBST(MATHN, $mathn)
 
 AC_CACHE_CHECK(for function name string predefined identifier,
     rb_cv_function_name_string,
-    [rb_cv_function_name_string=no
-    RUBY_WERROR_FLAG([
-	for func in __func__ __FUNCTION__; do
-	    AC_TRY_LINK([@%:@include <stdio.h>],
-			[puts($func);],
-			[rb_cv_function_name_string=$func
-			break])
-	done
-    ])]
+    [AS_CASE(["$target_os"],[openbsd*],[
+      rb_cv_function_name_string=__func__
+     ],[
+     rb_cv_function_name_string=no
+      RUBY_WERROR_FLAG([
+        for func in __func__ __FUNCTION__; do
+            AC_TRY_LINK([@%:@include <stdio.h>],
+            [puts($func);],
+            [rb_cv_function_name_string=$func
+            break])
+        done
+      ])])]
 )
 AS_IF([test "$rb_cv_function_name_string" != no], [
     AC_DEFINE_UNQUOTED(RUBY_FUNCTION_NAME_STRING, [$rb_cv_function_name_string])
@@ -1495,6 +1639,8 @@ AC_CHECK_MEMBERS([struct stat.st_ctim])
 AC_CHECK_MEMBERS([struct stat.st_ctimespec])
 AC_CHECK_MEMBERS([struct stat.st_ctimensec])
 AC_CHECK_MEMBERS([struct stat.st_birthtimespec])
+AS_IF([test "x$ac_cv_member_struct_stat_st_birthtimespec" != xyes],
+    [AC_CHECK_MEMBERS([struct statx.stx_btime])])
 
 AC_CHECK_TYPES([struct timeval], [], [], [@%:@ifdef HAVE_TIME_H
 @%:@include <time.h>
@@ -1556,7 +1702,13 @@ RUBY_DEFINT(int128_t, 16)
 RUBY_DEFINT(uint128_t, 16, unsigned)
 RUBY_DEFINT(intptr_t, void*)
 RUBY_DEFINT(uintptr_t, void*, unsigned)
+AS_IF([test "x$rb_cv_type_intptr_t" != xno], [
+    RUBY_CHECK_PRINTF_PREFIX(intptr_t, '' ll I64 l, PTR)
+])
 RUBY_DEFINT(ssize_t, size_t, [], [@%:@include <sys/types.h>])	dnl may differ from int, so not use AC_TYPE_SSIZE_T.
+AS_IF([test "x$rb_cv_type_int64_t" != xno], [
+    RUBY_CHECK_PRINTF_PREFIX(int64_t, ll I64 l, 64)
+])
 
 AC_CACHE_CHECK(for stack end address, rb_cv_stack_end_address,
 [rb_cv_stack_end_address=no
@@ -1567,34 +1719,6 @@ AC_CACHE_CHECK(for stack end address, rb_cv_stack_end_address,
 ])
 AS_IF([test $rb_cv_stack_end_address != no], [
   AC_DEFINE_UNQUOTED(STACK_END_ADDRESS, $rb_cv_stack_end_address)
-])
-
-# posix_memalign(memptr, alignment, size) implemented for OpenBSD 4.8 doesn't work if alignment > MALLOC_PAGESIZE.
-# [ruby-core:42158] https://bugs.ruby-lang.org/issues/5901
-# OpenBSD 5.2 fixed the problem. (src/lib/libc/stdlib/malloc.c:1.142)
-# MirOS #10semel has the problem but fixed in the repository.  (src/lib/libc/stdlib/malloc.c:1.9)
-AS_CASE(["$target_os"],
-[openbsd*|mirbsd*], [
-  AC_CACHE_CHECK(for heap align log on openbsd, rb_cv_page_size_log,
-    [rb_cv_page_size_log=no
-     for page_log in 12 13; do
-       AC_TRY_RUN([
-#include <math.h>
-#include <unistd.h>
-
-int
-main() {
-  if ((int)log2((double)sysconf(_SC_PAGESIZE)) != $page_log) return 1;
-  return 0;
-}
-       ],
-       rb_cv_page_size_log="$page_log"; break)
-     done])
-  AS_IF([test $rb_cv_page_size_log != no], [
-    AC_DEFINE_UNQUOTED(HEAP_ALIGN_LOG, $rb_cv_page_size_log)
-  ], [
-    AC_DEFINE_UNQUOTED(HEAP_ALIGN_LOG, 12)
-  ])
 ])
 
 dnl Checks for library functions.
@@ -1639,24 +1763,6 @@ AS_IF([test "x$ALLOCA" = "x"], [
 ])
 AC_FUNC_MEMCMP
 
-# http://sources.redhat.com/ml/libc-hacker/2005-08/msg00008.html
-# Debian GNU/Linux Etch's libc6.1 2.3.6.ds1-13etch5 has this problem.
-# Debian GNU/Linux Lenny's libc6.1 2.7-10 has no problem.
-AC_CACHE_CHECK(for broken erfc of glibc-2.3.6 on IA64, rb_cv_broken_glibc_ia64_erfc,
-  [AC_TRY_RUN([
-#include <math.h>
-int
-main()
-{
-   erfc(10000.0);
-   return 0;
-}
-],
-	rb_cv_broken_glibc_ia64_erfc=no,
-	rb_cv_broken_glibc_ia64_erfc=yes,
-	rb_cv_broken_glibc_ia64_erfc=no)])
-AS_CASE([$rb_cv_broken_glibc_ia64_erfc],[yes],[ac_cv_func_erf=no])
-
 AS_CASE(["$target_os"],[freebsd*],[
 	 AC_DEFINE(BROKEN_CLOSE)
 	 AC_REPLACE_FUNCS(close)
@@ -1669,11 +1775,8 @@ AC_REPLACE_FUNCS(dup2)
 AC_REPLACE_FUNCS(erf)
 AC_REPLACE_FUNCS(explicit_bzero)
 AC_REPLACE_FUNCS(ffs)
-AC_REPLACE_FUNCS(finite)
 AC_REPLACE_FUNCS(flock)
 AC_REPLACE_FUNCS(hypot)
-AC_REPLACE_FUNCS(isinf)
-AC_REPLACE_FUNCS(isnan)
 AC_REPLACE_FUNCS(lgamma_r)
 AC_REPLACE_FUNCS(memmove)
 AC_REPLACE_FUNCS(nan)
@@ -1685,6 +1788,10 @@ AC_REPLACE_FUNCS(strlcat)
 AC_REPLACE_FUNCS(strlcpy)
 AC_REPLACE_FUNCS(strstr)
 AC_REPLACE_FUNCS(tgamma)
+
+RUBY_REPLACE_FUNC([finite], [@%:@include <math.h>])
+RUBY_REPLACE_FUNC([isinf], [@%:@include <math.h>])
+RUBY_REPLACE_FUNC([isnan], [@%:@include <math.h>])
 
 # for missing/setproctitle.c
 AS_CASE(["$target_os"],
@@ -1706,33 +1813,6 @@ AS_IF([test "$rb_cv_have_signbit" = yes], [
   AC_LIBOBJ([signbit])
 ])
 
-AC_CACHE_CHECK(for broken memmem, rb_cv_broken_memmem, [
-    AC_TRY_RUN([
-@%:@include <string.h>
-
-int
-main(int argc, char **argv)
-{
-    const char *str = "hogefugafoobar";
-    const char *rs = "foo";
-    const char *empty = "";
-    char *p;
-
-    p = memmem(str, strlen(str), rs, strlen(rs));
-    if (p == str+8) {
-	p = memmem(str, strlen(str), empty, strlen(empty));
-	if (p == str)
-	    return 0;
-    }
-    return 1;
-}
-    ],
-    rb_cv_broken_memmem=no,
-    rb_cv_broken_memmem=yes,
-    rb_cv_broken_memmem=yes)
-])
-test x"$rb_cv_broken_memmem" = xyes && ac_cv_func_memmem=no
-
 AC_FUNC_FORK
 
 AC_CHECK_FUNCS(__syscall)
@@ -1744,6 +1824,7 @@ AC_CHECK_FUNCS(atan2l atan2f)
 AC_CHECK_FUNCS(chroot)
 AC_CHECK_FUNCS(chsize)
 AC_CHECK_FUNCS(clock_gettime)
+AC_CHECK_FUNCS(copy_file_range)
 AC_CHECK_FUNCS(cosh)
 AC_CHECK_FUNCS(crypt_r)
 AC_CHECK_FUNCS(daemon)
@@ -1755,6 +1836,9 @@ AC_CHECK_FUNCS(dup)
 AC_CHECK_FUNCS(dup3)
 AC_CHECK_FUNCS(eaccess)
 AC_CHECK_FUNCS(endgrent)
+AC_CHECK_FUNCS(eventfd)
+AC_CHECK_FUNCS(explicit_memset)
+AC_CHECK_FUNCS(fcopyfile)
 AC_CHECK_FUNCS(fchmod)
 AC_CHECK_FUNCS(fchown)
 AC_CHECK_FUNCS(fcntl)
@@ -1776,6 +1860,7 @@ AC_CHECK_FUNCS(getpgid)
 AC_CHECK_FUNCS(getpgrp)
 AC_CHECK_FUNCS(getpriority)
 AC_CHECK_FUNCS(getpwnam_r)
+AC_CHECK_FUNCS(getrandom)
 AC_CHECK_FUNCS(getresgid)
 AC_CHECK_FUNCS(getresuid)
 AC_CHECK_FUNCS(getrlimit)
@@ -1819,6 +1904,7 @@ AC_CHECK_FUNCS(pwrite)
 AC_CHECK_FUNCS(qsort_r)
 AC_CHECK_FUNCS(qsort_s)
 AC_CHECK_FUNCS(readlink)
+AC_CHECK_FUNCS(realpath)
 AC_CHECK_FUNCS(round)
 AC_CHECK_FUNCS(sched_getaffinity)
 AC_CHECK_FUNCS(seekdir)
@@ -1861,7 +1947,10 @@ AC_CHECK_FUNCS(utimes)
 AC_CHECK_FUNCS(wait4)
 AC_CHECK_FUNCS(waitpid)
 
-AS_IF([test "$ac_cv_func_memset_s" = yes],
+AS_IF([test "x$ac_cv_member_struct_statx_stx_btime" = xyes],
+    [AC_CHECK_FUNCS(statx)])
+
+AS_CASE(["$ac_cv_func_memset_s:$ac_cv_func_qsort_s"], [*yes*],
     [RUBY_DEFINE_IF([!defined __STDC_WANT_LIB_EXT1__], [__STDC_WANT_LIB_EXT1__], 1)])
 
 AS_IF([test "$ac_cv_func_getcwd" = yes], [
@@ -1929,12 +2018,13 @@ AS_IF([test x$rb_cv_builtin___builtin_choose_expr = xyes], [
     ])
 ])
 RUBY_CHECK_BUILTIN_FUNC(__builtin_types_compatible_p, [__builtin_types_compatible_p(int, int)])
+RUBY_CHECK_BUILTIN_FUNC(__builtin_trap, [__builtin_trap()])
 
 AS_IF([test "$ac_cv_func_qsort_r" != no], [
   AC_CACHE_CHECK(whether qsort_r is GNU version, rb_cv_gnu_qsort_r,
     [AC_TRY_COMPILE([
 @%:@include <stdlib.h>
-void qsort_r(void *base, size_t nmemb, size_t size,
+void (qsort_r)(void *base, size_t nmemb, size_t size,
 	    int (*compar)(const void *, const void *, void *),
 	    void *arg);
 ],[ ],
@@ -1944,7 +2034,7 @@ void qsort_r(void *base, size_t nmemb, size_t size,
   AC_CACHE_CHECK(whether qsort_r is BSD version, rb_cv_bsd_qsort_r,
     [AC_TRY_COMPILE([
 @%:@include <stdlib.h>
-void qsort_r(void *base, size_t nmemb, size_t size,
+void (qsort_r)(void *base, size_t nmemb, size_t size,
 	     void *arg, int (*compar)(void *, const void *, const void *));
 ],[ ],
       [rb_cv_bsd_qsort_r=yes],
@@ -1998,6 +2088,14 @@ AS_IF([test x"$ac_cv_func_clock_gettime" != xyes], [
     ])
 ])
 AC_CHECK_FUNCS(clock_getres) # clock_getres should be tested after clock_gettime test including librt test.
+AC_CHECK_LIB([rt], [timer_create])
+AC_CHECK_LIB([rt], [timer_settime])
+AS_IF([test x"$ac_cv_lib_rt_timer_create" = xyes], [
+    AC_DEFINE(HAVE_TIMER_CREATE, 1)
+])
+AS_IF([test x"$ac_cv_lib_rt_timer_settime" = xyes], [
+    AC_DEFINE(HAVE_TIMER_SETTIME, 1)
+])
 
 AC_CACHE_CHECK(for unsetenv returns a value, rb_cv_unsetenv_return_value,
   [AC_TRY_COMPILE([
@@ -2179,21 +2277,6 @@ AS_IF([test x"$ac_cv_func_dirfd" = xno], [
 ])])
 ])
 
-AS_IF([test x"$target_cpu" = xia64], [
-    AC_LIBOBJ([ia64])
-    AC_CACHE_CHECK(for __libc_ia64_register_backing_store_base,
-                   rb_cv___libc_ia64_register_backing_store_base,
-    [rb_cv___libc_ia64_register_backing_store_base=no
-    AC_TRY_LINK(
-      [extern unsigned long __libc_ia64_register_backing_store_base;],
-      [unsigned long p = __libc_ia64_register_backing_store_base;
-       printf("%ld\n", p);],
-      [rb_cv___libc_ia64_register_backing_store_base=yes])])
-    AS_IF([test $rb_cv___libc_ia64_register_backing_store_base = yes], [
-      AC_DEFINE(HAVE___LIBC_IA64_REGISTER_BACKING_STORE_BASE)
-    ])
-])
-
 AC_CACHE_CHECK(whether right shift preserve sign bit, rb_cv_rshift_sign,
     [AC_COMPILE_IFELSE([AC_LANG_BOOL_COMPILE_TRY([], [(-1==(-1>>1))])],
 	rb_cv_rshift_sign=yes,
@@ -2244,6 +2327,68 @@ AS_IF([test "${universal_binary-no}" = yes ], [
     RUBY_STACK_GROW_DIRECTION($target_cpu, dir)
     AC_DEFINE_UNQUOTED(STACK_GROW_DIRECTION, $dir)
 ])
+
+AC_ARG_WITH(coroutine,
+    AS_HELP_STRING([--with-coroutine=IMPLEMENTATION], [specify the coroutine implementation to use]),
+    [rb_cv_coroutine=$withval])
+AS_CASE([$rb_cv_coroutine], [yes|''], [
+    AC_MSG_CHECKING(native coroutine implementation for ${target_cpu}-${target_os})
+    AS_CASE(["$target_cpu-$target_os"],
+        [x*64-darwin*], [
+            rb_cv_coroutine=amd64
+        ],
+        [x*64-linux*], [
+            AS_CASE(["$ac_cv_sizeof_voidp"],
+                [8], [ rb_cv_coroutine=amd64 ],
+                [4], [ rb_cv_coroutine=x86 ],
+                [*], [ rb_cv_coroutine= ]
+            )
+        ],
+        [*86-linux*], [
+            rb_cv_coroutine=x86
+        ],
+        [x64-mingw32], [
+            rb_cv_coroutine=win64
+        ],
+        [*86-mingw32], [
+            rb_cv_coroutine=win32
+        ],
+        [armv7*-linux*], [
+            rb_cv_coroutine=ucontext
+        ],
+        [aarch64-linux*], [
+            rb_cv_coroutine=arm64
+        ],
+        [powerpc64le-linux*], [
+            rb_cv_coroutine=ppc64le
+        ],
+        [x86_64-openbsd*], [
+            rb_cv_coroutine=amd64
+        ],
+        [i386-openbsd*], [
+            rb_cv_coroutine=x86
+        ],
+        [*-openbsd*], [
+            rb_cv_coroutine=copy
+        ],
+        [*], [
+            rb_cv_coroutine=ucontext
+        ]
+    )
+    AC_MSG_RESULT(${rb_cv_coroutine})
+])
+COROUTINE_H=coroutine/$rb_cv_coroutine/Context.h
+AS_CASE([$rb_cv_coroutine],
+    [copy|ucontext], [
+        COROUTINE_SRC=coroutine/$rb_cv_coroutine/Context.c
+    ],
+    [*], [
+        COROUTINE_SRC=coroutine/$rb_cv_coroutine/Context.'$(ASMEXT)'
+    ],
+)
+AC_DEFINE_UNQUOTED(COROUTINE_H, ["$COROUTINE_H"])
+AC_SUBST(X_COROUTINE_H, [$COROUTINE_H])
+AC_SUBST(X_COROUTINE_SRC, [$COROUTINE_SRC])
 
 AS_IF([test x"$enable_pthread" = xyes], [
     for pthread_lib in thr pthread pthreads c c_r root; do
@@ -2450,7 +2595,15 @@ AS_IF([test "$rb_cv_binary_elf" = yes], [
   AC_CHECK_HEADERS([elf.h elf_abi.h])
   AS_IF([test $ac_cv_header_elf_h = yes -o $ac_cv_header_elf_abi_h = yes], [
     AC_LIBOBJ([addr2line])
+    AS_IF([test "x$compress_debug_sections" = xzlib], [
+      AC_CHECK_LIB([z], [uncompress])
+    ])
   ])
+])
+
+AC_CHECK_HEADERS([mach-o/loader.h])
+AS_IF([test "$ac_cv_header_mach_o_loader_h" = yes], [
+  AC_LIBOBJ([addr2line])
 ])
 
 AS_CASE(["$target_os"],
@@ -2466,7 +2619,11 @@ AC_SUBST(DLDFLAGS)dnl
 AC_SUBST(ARCH_FLAG)dnl
 AC_SUBST(MJIT_HEADER_FLAGS)dnl
 AC_SUBST(MJIT_HEADER_INSTALL_DIR)dnl
-AC_SUBST(MJIT_CC, [${MJIT_CC-'$(CC)'}])dnl
+AC_SUBST(MJIT_CC)dnl
+AS_IF([test "$GCC" = "yes"], [
+    AS_CASE(["$target_os"],[aix*],[mjit_std_cflag="-std=gnu99"])
+])
+AC_SUBST(MJIT_CFLAGS, [${MJIT_CFLAGS-"-w ${mjit_std_cflag} ${orig_cflags}"}])dnl
 AC_SUBST(MJIT_OPTFLAGS, [${MJIT_OPTFLAGS-'$(optflags)'}])dnl
 AC_SUBST(MJIT_DEBUGFLAGS, [${MJIT_DEBUGFLAGS-'$(debugflags)'}])dnl
 AC_SUBST(MJIT_LDSHARED)dnl
@@ -2576,19 +2733,25 @@ AS_IF([test "$with_dln_a_out" != yes], [
 			])
 			rb_cv_dlopen=yes],
 	[darwin*], [	: ${LDSHARED='$(CC) -dynamic -bundle'}
+			: ${DLDSHARED='$(CC) -dynamiclib'}
 			: ${LDFLAGS=""}
-			: ${LIBPATHENV=DYLD_LIBRARY_PATH}
+			: ${LIBPATHENV=DYLD_FALLBACK_LIBRARY_PATH}
 			: ${PRELOADENV=DYLD_INSERT_LIBRARIES}
 			rb_cv_dlopen=yes],
         [aix*], [	: ${LDSHARED='$(CC)'}
-			LDSHARED="$LDSHARED ${linker_flag}-G"
+			AS_IF([test "$GCC" = yes], [
+			    LDSHARED="$LDSHARED ${linker_flag}-G -shared"
+			], [
+			    LDSHARED="$LDSHARED ${linker_flag}-G"
+			])
 			EXTDLDFLAGS='-e$(TARGET_ENTRY)'
 			XLDFLAGS="${linker_flag}"'-bE:$(ARCHFILE)'" ${linker_flag}-brtl"
 			XLDFLAGS="$XLDFLAGS ${linker_flag}-blibpath:${prefix}/lib:${LIBPATH:-/usr/lib:/lib}"
 			: ${ARCHFILE="ruby.imp"}
-                        TRY_LINK='$(CC) $(LDFLAGS) -oconftest $(INCFLAGS) -I$(hdrdir) $(CPPFLAGS)'
-                        TRY_LINK="$TRY_LINK"' $(CFLAGS) $(src) $(LIBPATH) $(LOCAL_LIBS) $(LIBS)'
+                        TRY_LINK='$(CC) -oconftest $(INCFLAGS) -I$(hdrdir) $(CPPFLAGS)'
+                        TRY_LINK="$TRY_LINK"' $(CFLAGS) $(src) $(LIBPATH) $(LDFLAGS) $(LOCAL_LIBS) $(LIBS)'
 			: ${LIBPATHENV=LIBPATH}
+			: ${PRELOADENV=LDR_PRELOAD}
 			rb_cv_dlopen=yes],
 	[nto-qnx*], [	DLDFLAGS="$DLDFLAGS -L/lib -L/usr/lib -L/usr/local/lib"
 			: ${LDSHARED='$(LD) -Bshareable -x'}
@@ -2678,6 +2841,7 @@ AS_CASE(["$target_os"],
     ])
 AS_CASE(["$target_cpu-$target_os"],
 [*-darwin*], [
+    AC_CHECK_HEADERS([libproc.h])
     AC_CHECK_HEADERS([execinfo.h])
     AS_IF([test "x$ac_cv_header_execinfo_h" = xyes], [
 	AC_CHECK_LIB([execinfo], [backtrace])
@@ -2719,6 +2883,8 @@ main(void)
 {
     volatile int *a = NULL;
     stack_t ss;
+    struct sigaction sa;
+
     ss.ss_sp = malloc(SIGSTKSZ);
     if (ss.ss_sp == NULL) {
 	fprintf(stderr, "cannot allocate memory for sigaltstack\n");
@@ -2730,7 +2896,6 @@ main(void)
 	fprintf(stderr, "sigaltstack failed\n");
 	return EXIT_FAILURE;
     }
-    struct sigaction sa;
     memset(&sa, 0, sizeof(struct sigaction));
     sigemptyset(&sa.sa_mask);
     sa.sa_sigaction = sigsegv;
@@ -2901,6 +3066,7 @@ for var in bindir libdir rubylibprefix; do
 done
 
 BTESTRUBY='$(MINIRUBY)'
+BOOTSTRAPRUBY='$(BASERUBY)'
 AS_IF([test x"$cross_compiling" = xyes], [
   test x"$MINIRUBY" = x && MINIRUBY="${RUBY-$BASERUBY} -I`$CHDIR .; pwd` "-r'$(arch)-fake'
   XRUBY_LIBDIR=`${RUBY-$BASERUBY} -rrbconfig -e ['puts RbConfig::CONFIG["libdir"]']`
@@ -2913,9 +3079,9 @@ AS_IF([test x"$cross_compiling" = xyes], [
   RUNRUBY_COMMAND='$(MINIRUBY) -I`cd $(srcdir)/lib; pwd`'
   RUNRUBY='$(RUNRUBY_COMMAND)'
   XRUBY='$(MINIRUBY)'
-  BOOTSTRAPRUBY='$(BASERUBY)'
   TEST_RUNNABLE=no
   CROSS_COMPILING=yes
+  AC_DEFINE(CROSS_COMPILING, 1)
 ], [
   MINIRUBY='./miniruby$(EXEEXT) -I$(srcdir)/lib -I.'
   MINIRUBY="$MINIRUBY"' -I$(EXTOUT)/common'
@@ -2923,7 +3089,7 @@ AS_IF([test x"$cross_compiling" = xyes], [
   RUNRUBY_COMMAND='$(MINIRUBY) $(srcdir)/tool/runruby.rb --extout=$(EXTOUT) $(RUNRUBYOPT)'
   RUNRUBY='$(RUNRUBY_COMMAND) --'
   XRUBY='$(RUNRUBY)'
-  BOOTSTRAPRUBY='$(MINIRUBY)'
+  AS_CASE(["$HAVE_BASERUBY:$build_os"], [no:*|*:mingw*], [BOOTSTRAPRUBY='$(MINIRUBY)'])
   TEST_RUNNABLE=yes
   CROSS_COMPILING=no
 ])
@@ -2988,7 +3154,7 @@ AC_ARG_WITH(soname,
 	    [RUBY_SO_NAME='$(RUBY_BASE_NAME)'])
 	])
 
-LIBRUBY_LDSHARED=$LDSHARED
+LIBRUBY_LDSHARED=${DLDSHARED=${LDSHARED}}
 LIBRUBY_DLDFLAGS=$DLDFLAGS
 LIBRUBY_SO='lib$(RUBY_SO_NAME).$(SOEXT).$(RUBY_PROGRAM_VERSION)'
 LIBRUBY_SONAME='lib$(RUBY_SO_NAME).$(SOEXT).$(RUBY_API_VERSION)'
@@ -3065,11 +3231,7 @@ AS_CASE("$enable_shared", [yes], [
 	LIBRUBY_SO='lib$(RUBY_SO_NAME).$(SOEXT).$(MAJOR)'
 	LIBRUBY_SONAME='lib$(RUBY_SO_NAME).$(SOEXT).$(RUBY_PROGRAM_VERSION)'
 	LIBRUBY_ALIASES='$(LIBRUBY_SONAME) lib$(RUBY_SO_NAME).$(SOEXT)'
-	AS_IF([test "$GCC" = yes], [
-	    LIBRUBY_DLDFLAGS="$DLDFLAGS "'-Wl,-h,$(@F)'
-	], [
-	    LIBRUBY_DLDFLAGS="$DLDFLAGS "'-h $(@F)'
-	])
+	RUBY_APPEND_OPTIONS(LIBRUBY_DLDFLAGS, ["${linker_flag}-h${linker_flag:+,}"'$(@F)'])
 	XLDFLAGS="$XLDFLAGS "'-R${libdir}'
 	],
     [hpux*], [
@@ -3085,7 +3247,6 @@ AS_CASE("$enable_shared", [yes], [
 	LIBRUBY_SO='lib$(RUBY_SO_NAME).$(SOEXT)'
 	LIBRUBY_SONAME='$(LIBRUBY_SO)'
 	LIBRUBY_ALIASES='lib$(RUBY_INSTALL_NAME).$(SOEXT)'
-	LIBRUBY_LDSHARED='$(CC) -dynamiclib'
 	AS_IF([test "$load_relative" = yes], [
 	    libprefix="@executable_path/../${libdir_basename}"
 	    LIBRUBY_RELATIVE=yes
@@ -3232,18 +3393,30 @@ CAPITARGET=""
 AC_ARG_ENABLE(install-doc,
        AS_HELP_STRING([--disable-install-doc], [do not install either rdoc indexes or C API documents during install]),
        [install_doc=$enableval], [install_doc=yes])
+AC_ARG_WITH(rdoc,
+      AS_HELP_STRING([--with-rdoc=ri,html], [comma/space separated list of RDoc formats to install]),
+      [install_rdoc=`echo ,$withval, | sed 'y/,/ /;s/ ri / rdoc /;s/^ *//;s/ *$//'`], [
 AC_ARG_ENABLE(install-rdoc,
       AS_HELP_STRING([--disable-install-rdoc], [do not install rdoc indexes during install]),
       [install_rdoc=$enableval], [install_rdoc=yes])
+])
 AC_ARG_ENABLE(install-capi,
       AS_HELP_STRING([--disable-install-capi], [do not install C API documents during install]),
       [install_capi=$enableval], [install_capi=no])
 
 AS_IF([test "$install_doc" != no], [
-    AS_IF([test "$install_rdoc" != no], [
+    AS_CASE(["$install_rdoc"],
+    [yes], [
 	RDOCTARGET="rdoc"
-    ], [
+    ],
+    [all], [
+	RDOCTARGET="rdoc html"
+    ],
+    [no|''], [
 	RDOCTARGET="nodoc"
+    ],
+    [
+	RDOCTARGET="$install_rdoc"
     ])
     AS_IF([test "$install_capi" != no -a -n "$DOXYGEN"], [
 	CAPITARGET="capi"
@@ -3260,6 +3433,17 @@ AC_SUBST(CAPITARGET)
 
 AS_CASE(["$RDOCTARGET:$CAPITARGET"],[nodoc:nodoc],[INSTALLDOC=nodoc],[INSTALLDOC=all])
 AC_SUBST(INSTALLDOC)
+
+AC_ARG_ENABLE(jit-support,
+        AS_HELP_STRING([--disable-jit-support], [disable JIT features]),
+        [MJIT_SUPPORT=$enableval
+         AS_IF([test x"$enable_jit_support" = "xyes"],
+                 [AC_DEFINE(USE_MJIT, 1)],
+                 [AC_DEFINE(USE_MJIT, 0)])],
+        [MJIT_SUPPORT=yes
+         AC_DEFINE(USE_MJIT, 1)])
+
+AC_SUBST(MJIT_SUPPORT)
 
 AC_ARG_ENABLE(install-static-library,
 	AS_HELP_STRING([--disable-install-static-library], [do not install static ruby library]),
@@ -3297,6 +3481,14 @@ AS_CASE(["$target_os"],
 	],
     [darwin*], [
 	RUBY_APPEND_OPTION(CFLAGS, -pipe)
+	AC_COMPILE_IFELSE([
+	    AC_LANG_BOOL_COMPILE_TRY([@%:@include <AvailabilityMacros.h>],
+		[MAC_OS_X_VERSION_MIN_REQUIRED >= MAC_OS_X_VERSION_10_7])],
+	    [dnl
+		RUBY_APPEND_OPTION(XLDFLAGS, [-framework Security])
+		RUBY_APPEND_OPTION(LIBRUBYARG_STATIC, [-framework Security])
+	    ]dnl
+	)
 	RUBY_APPEND_OPTION(XLDFLAGS, [-framework Foundation])
 	RUBY_APPEND_OPTION(LIBRUBYARG_STATIC, [-framework Foundation])
 	],
@@ -3316,7 +3508,7 @@ AS_CASE(["$target_os"],
 	])
 	],
     [cygwin*|mingw*], [
-	LIBRUBY_DLDFLAGS="${DLDFLAGS}"' -Wl,--out-implib=$(LIBRUBY)'
+	LIBRUBY_DLDFLAGS="${LIBRUBY_DLDFLAGS}"' -Wl,--out-implib=$(LIBRUBY)'
 	AS_CASE(["$target_os"],
 	[cygwin*], [
 	    AS_IF([test x"$enable_shared" = xyes], [
@@ -3465,10 +3657,11 @@ AS_IF([test "${ARCH_FLAG}"], [
     CXXFLAGS=`echo "$CXXFLAGS" | sed "s| *$archflagpat"'||'`
     LDFLAGS=`echo "$LDFLAGS" | sed "s| *$archflagpat"'||'`
 ])
+rb_cv_warnflags=`echo "$rb_cv_warnflags" | sed 's/^ *//;s/ *$//'`
 warnflags="$rb_cv_warnflags"
 AC_SUBST(cppflags)dnl
 AC_SUBST(cflags, ["${orig_cflags:+$orig_cflags }"'${optflags} ${debugflags} ${warnflags}'])dnl
-AC_SUBST(cxxflags, ["${orig_cxxflags:+$orig_cxxflags }"'${optflags} ${debugflags} ${warnflags}'])dnl
+AC_SUBST(cxxflags)dnl
 AC_SUBST(optflags)dnl
 AC_SUBST(debugflags)dnl
 AC_SUBST(warnflags)dnl
@@ -3493,6 +3686,7 @@ AC_SUBST(LIBRUBYARG_STATIC)
 AC_SUBST(LIBRUBYARG_SHARED)
 AC_SUBST(SOLIBS)
 AC_SUBST(DLDLIBS)
+AC_SUBST(DLDSHARED)
 AC_SUBST(ENABLE_SHARED)
 AC_SUBST(MAINLIBS)
 AC_SUBST(COMMON_LIBS)
@@ -3636,7 +3830,7 @@ AS_IF([test "${universal_binary-no}" = yes ], [
 	for archs in ${universal_archnames}; do
 	    cpu=`echo $archs | sed 's/.*=//'`
 	    archs=`echo $archs | sed 's/=.*//'`
-	    RUBY_DEFINE_IF([defined __${archs}__], RUBY_PLATFORM_CPU, ["${cpu}"])
+	    RUBY_DEFINE_IF([defined __${archs}__ &&! defined RUBY_PLATFORM_CPU], RUBY_PLATFORM_CPU, ["${cpu}"])
 	done
     ])
     ints='long int short'
@@ -3644,8 +3838,8 @@ AS_IF([test "${universal_binary-no}" = yes ], [
     AC_SUBST(UNIVERSAL_ARCHNAMES, "${universal_archnames}")
     AC_SUBST(UNIVERSAL_INTS, "${ints}")
     AC_DEFINE_UNQUOTED(RUBY_PLATFORM_OS, "${target_os}")
-    AC_DEFINE_UNQUOTED(RUBY_ARCH, "universal-"RUBY_PLATFORM_OS)
-    AC_DEFINE_UNQUOTED(RUBY_PLATFORM, "universal."RUBY_PLATFORM_CPU"-"RUBY_PLATFORM_OS)
+    AC_DEFINE_UNQUOTED(RUBY_ARCH, "universal-" RUBY_PLATFORM_OS)
+    AC_DEFINE_UNQUOTED(RUBY_PLATFORM, "universal." RUBY_PLATFORM_CPU "-" RUBY_PLATFORM_OS)
 ], [
     arch="${target_cpu}-${target_os}"
     AC_DEFINE_UNQUOTED(RUBY_PLATFORM, "$arch")
@@ -3779,30 +3973,31 @@ PACKAGE=$RUBY_BASE_NAME
 AC_SUBST(PACKAGE)
 AS_MESSAGE([$PACKAGE library version = $ruby_version])
 
+AS_IF([test x"$CC_WRAPPER" != x], [
+    CC='$(CC_WRAPPER) '"${CC@%:@$CC_WRAPPER }"
+    CPP='$(CC_WRAPPER) '"${CPP@%:@$CC_WRAPPER }"
+    CC_WRAPPER='$(rubyarchdir)/darwin-cc'
+    XCC_WRAPPER='$(top_srcdir)/tool/darwin-cc'
+])
+AC_SUBST(CC_WRAPPER, '')
+AC_SUBST(XCC_WRAPPER)
+
 AS_CASE([" $CPP "], [*" $CC "*], [CPP=`echo " $CPP " | sed "s| $CC |"' $(CC) |;s/^ *//;s/  *$//'`])
 
 AS_IF([test x"$firstmf" != x], [
     AC_CONFIG_FILES($firstmf:$firsttmpl, [], [firstmf="$firstmf" firsttmpl="$firsttmpl"])
 ])
-AC_CONFIG_FILES(Makefile, [
+AC_CONFIG_FILES(Makefile:template/Makefile.in, [
     tmpmk=confmk$$.tmp
     {
 	AS_IF([test ${VCS+set}], [
 	    :
-	], [svn info "$srcdir" > /dev/null 2>&1], [
-	    VCS='svn'
 	], [git_dir=`$GIT --work-tree="$srcdir" --git-dir="$srcdir/.git" rev-parse --git-dir 2>/dev/null`], [
-	    AS_IF([test -d "$git_dir/svn"], [
-		VCS='$(GIT) svn'
-	    ], [
-		VCS='$(GIT)'
-	    ])
+	    VCS='$(GIT)'
 	], [
 	    VCS='echo cannot'
 	])
 	AS_CASE("$VCS",
-		[svn],          [VCSUP='$(VCS) up $(SVNUPOPTIONS)'],
-		['$(GIT) svn'], [VCSUP='$(VCS) rebase $(GITSVNREBASEOPTIONS)'],
 		['$(GIT)'|git], [VCSUP='$(VCS) pull $(GITPULLOPTIONS)'],
 		[VCSUP='$(VCS)'])
 	sed -n \
@@ -3870,19 +4065,23 @@ AS_IF([test "$silent" = yes], [], [
 AS_IF([${FOLD+:} false], [], [
 AS_IF([test "`echo abcdefg hijklmno | fold -s -w10 | sed 1d`" = hijklmno], [FOLD="fold"], [FOLD=])
 ])
+fold_width=`expr $COLUMNS - 30 2>/dev/null` || fold_width=50
 AS_REQUIRE_SHELL_FN([config_summary],
     [AS_FUNCTION_DESCRIBE([config_summary], [NAME, VAL], [configuration summary])],
     [AS_IF([test -z "$2"], [], [
 	AS_ECHO_N(["   * $1:                     "]) | dd bs=1 count=26 2>/dev/null
 	AS_IF([test "$FOLD"], [
-	    echo "$2" | fold -s -w50 |
+	    echo "$2" | fold -s -w$fold_width |
 	    sed '1!s/^/                          /;$!s/$/\\/'
 	], [echo "$2"])
     ])]
 )
 
+AS_IF([test $install_doc = yes],
+    [DOCTARGETS=`echo " $RDOCTARGET $CAPITARGET " | sed 's/ nodoc //g;s/^ *//;s/ *$//'`],
+    [DOCTARGETS=no])
 echo "---"
-echo "Configuration summary for $RUBY_BASE_NAME version $RUBY_PROGRAM_VERSION"
+echo "Configuration summary for $RUBY_BASE_NAME version $MAJOR.$MINOR.$TEENY"
 echo ""
 config_summary "Installation prefix" "$prefix"
 config_summary "exec prefix"         "$exec_prefix"
@@ -3896,6 +4095,7 @@ config_summary "vendor path"         "$vendordir"
 config_summary "target OS"           "$target_os"
 config_summary "compiler"            "$CC"
 config_summary "with pthread"        "$enable_pthread"
+config_summary "with coroutine"      "$rb_cv_coroutine"
 config_summary "enable shared libs"  "$ENABLE_SHARED"
 config_summary "dynamic library ext" "$DLEXT"
 config_summary "CFLAGS"              "$cflags"
@@ -3906,10 +4106,12 @@ config_summary "optflags"            "$optflags"
 config_summary "debugflags"          "$debugflags"
 config_summary "warnflags"           "$warnflags"
 config_summary "strip command"       "$STRIP"
-config_summary "install doc"         "$install_doc"
+config_summary "install doc"         "$DOCTARGETS"
+config_summary "JIT support"         "$MJIT_SUPPORT"
 config_summary "man page type"       "$MANTYPE"
 config_summary "search path"         "$search_path"
 config_summary "static-linked-ext"   ${EXTSTATIC:+"yes"}
+config_summary "BASERUBY -v"         "$BASERUBY_VERSION"
 echo ""
 echo "---"
 ])

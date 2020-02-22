@@ -12,11 +12,13 @@ IMPLS = {
   },
   mri: {
     git: "https://github.com/ruby/ruby.git",
-    master: "trunk",
   },
 }
 
 MSPEC = ARGV.delete('--mspec')
+
+CHECK_LAST_MERGE = ENV['CHECK_LAST_MERGE'] != 'false'
+TEST_TRUNK = ENV['TEST_TRUNK'] != 'false'
 
 MSPEC_REPO = File.expand_path("../../..", __FILE__)
 raise MSPEC_REPO if !Dir.exist?(MSPEC_REPO) or !Dir.exist?("#{MSPEC_REPO}/.git")
@@ -43,10 +45,6 @@ class RubyImplementation
 
   def git_url
     @data[:git]
-  end
-
-  def default_branch
-    @data[:master] || "master"
   end
 
   def repo_name
@@ -96,7 +94,7 @@ def update_repo(impl)
   Dir.chdir(impl.repo_name) do
     puts Dir.pwd
 
-    sh "git", "checkout", impl.default_branch
+    sh "git", "checkout", "master"
     sh "git", "pull"
   end
 end
@@ -144,7 +142,7 @@ def rebase_commits(impl)
 
       commit_date = Time.at(Integer(commit_timestamp))
       days_since_last_merge = (NOW-commit_date) / 86400
-      if days_since_last_merge > 60
+      if CHECK_LAST_MERGE and days_since_last_merge > 60
         raise "#{days_since_last_merge.floor} days since last merge, probably wrong commit"
       end
 
@@ -159,10 +157,9 @@ end
 def test_new_specs
   require "yaml"
   Dir.chdir(SOURCE_REPO) do
-    versions = YAML.load_file(".travis.yml")
-    versions = versions["matrix"]["include"].map { |job| job["rvm"] }
-    versions.delete "ruby-head"
-    versions.delete "system"
+    workflow = YAML.load_file(".github/workflows/ci.yml")
+    versions = workflow.dig("jobs", "test", "strategy", "matrix", "ruby")
+    versions = versions.grep(/^\d+\./) # Test on MRI
     min_version, max_version = versions.minmax
 
     test_command = MSPEC ? "bundle exec rspec" : "../mspec/bin/mspec -j"
@@ -174,7 +171,7 @@ def test_new_specs
 
     run_test[min_version]
     run_test[max_version]
-    run_test["trunk"]
+    run_test["trunk"] if TEST_TRUNK
   end
 end
 
@@ -184,7 +181,7 @@ def verify_commits(impl)
     puts "Manually check commit messages:"
     print "Press enter >"
     STDIN.gets
-    sh "git", "log", "master..."
+    system "git", "log", "master..."
   end
 end
 
@@ -192,6 +189,7 @@ def fast_forward_master(impl)
   Dir.chdir(SOURCE_REPO) do
     sh "git", "checkout", "master"
     sh "git", "merge", "--ff-only", "#{impl.name}-rebased"
+    sh "git", "branch", "--delete", "#{impl.name}-rebased"
   end
 end
 
